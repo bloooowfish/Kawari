@@ -2,14 +2,18 @@ use crate::{CharaMake, GameData, RemakeMode, WorldDatabase, inventory::Inventory
 use kawari::{
     common::determine_initial_starting_zone,
     config::get_config,
-    ipc::kawari::{CustomIpcData, CustomIpcSegment},
+    ipc::kawari::{
+        CustomIpcData, CustomIpcSegment, HOUSING_EXPORTS_DIR, clamp_housing_detail_json_for_ipc,
+        clamp_housing_export_path_for_ipc, clamp_housing_message_for_ipc,
+        clamp_housing_summary_json_for_ipc, validate_housing_import_path_for_ipc,
+    },
     packet::{
         CompressionType, ConnectionState, ConnectionType, PacketSegment, SegmentData, SegmentType,
         parse_packet, send_packet,
     },
 };
 
-use std::sync::Arc;
+use std::{fs, path::PathBuf, sync::Arc};
 
 use parking_lot::Mutex;
 use tokio::net::TcpStream;
@@ -21,6 +25,83 @@ pub struct CustomIpcConnection {
     pub state: ConnectionState,
     pub database: Arc<Mutex<WorldDatabase>>,
     pub gamedata: Arc<Mutex<GameData>>,
+}
+
+fn housing_summary_response(json: String) -> CustomIpcData {
+    CustomIpcData::HousingSummaryResponse {
+        json: clamp_housing_summary_json_for_ipc(&json),
+    }
+}
+
+fn housing_detail_response(json: String) -> CustomIpcData {
+    CustomIpcData::HousingEstateDetailResponse {
+        json: clamp_housing_detail_json_for_ipc(&json),
+    }
+}
+
+fn housing_detail_json_for_admin_result(
+    land_ident: i64,
+    detail_json: Result<Option<String>, serde_json::Error>,
+) -> String {
+    match detail_json {
+        Ok(Some(json)) => json,
+        Ok(None) => format!(
+            r#"{{"error":"Housing estate {} was not found."}}"#,
+            land_ident
+        ),
+        Err(err) => {
+            tracing::warn!(
+                "Failed to serialize housing estate detail {land_ident} for admin IPC: {err}"
+            );
+            format!(
+                r#"{{"error":"housing_detail_backend_error","land_ident":{},"message":"Failed to serialize housing estate detail for admin."}}"#,
+                land_ident
+            )
+        }
+    }
+}
+
+fn housing_import_result(message: String) -> CustomIpcData {
+    CustomIpcData::HousingEstateImportResult {
+        message: clamp_housing_message_for_ipc(&message),
+    }
+}
+
+fn housing_exported(path: String, message: String) -> CustomIpcData {
+    CustomIpcData::HousingEstateExported {
+        path: clamp_housing_export_path_for_ipc(&path),
+        message: clamp_housing_message_for_ipc(&message),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn housing_detail_json_for_admin_result_returns_not_found_message() {
+        assert_eq!(
+            super::housing_detail_json_for_admin_result(42, Ok(None)),
+            r#"{"error":"Housing estate 42 was not found."}"#
+        );
+    }
+
+    #[test]
+    fn housing_detail_json_for_admin_result_returns_backend_error_payload() {
+        let err =
+            serde_json::from_str::<serde_json::Value>("{").expect_err("invalid JSON should fail");
+        let payload = super::housing_detail_json_for_admin_result(42, Err(err));
+        let parsed: serde_json::Value =
+            serde_json::from_str(&payload).expect("backend error payload should be valid JSON");
+
+        assert_eq!(
+            parsed["error"].as_str(),
+            Some("housing_detail_backend_error")
+        );
+        assert_eq!(parsed["land_ident"].as_i64(), Some(42));
+        assert_eq!(
+            parsed["message"].as_str(),
+            Some("Failed to serialize housing estate detail for admin.")
+        );
+    }
 }
 
 impl CustomIpcConnection {
@@ -260,6 +341,186 @@ impl CustomIpcConnection {
                     data: SegmentData::KawariIpc(CustomIpcSegment::new(
                         CustomIpcData::FullCharacterListResponse { json },
                     )),
+                    ..Default::default()
+                })
+                .await;
+            }
+            CustomIpcData::RequestHousingSummary {} => {
+                let json = {
+                    let mut database = self.database.lock();
+                    database.housing_summary_json_for_admin()
+                };
+
+                self.send_custom_response(PacketSegment {
+                    segment_type: SegmentType::KawariIpc,
+                    data: SegmentData::KawariIpc(CustomIpcSegment::new(housing_summary_response(
+                        json,
+                    ))),
+                    ..Default::default()
+                })
+                .await;
+            }
+            CustomIpcData::RequestHousingEstateDetail { land_ident } => {
+                let json = {
+                    let mut database = self.database.lock();
+                    housing_detail_json_for_admin_result(
+                        *land_ident,
+                        database.housing_estate_detail_ipc_json_for_admin(*land_ident),
+                    )
+                };
+
+                self.send_custom_response(PacketSegment {
+                    segment_type: SegmentType::KawariIpc,
+                    data: SegmentData::KawariIpc(CustomIpcSegment::new(housing_detail_response(
+                        json,
+                    ))),
+                    ..Default::default()
+                })
+                .await;
+            }
+            CustomIpcData::ResetHousingFurniture { land_ident } => {
+                let message = {
+                    let mut database = self.database.lock();
+                    if database
+                        .housing_estate_detail_for_admin(*land_ident)
+                        .is_none()
+                    {
+                        format!("Housing estate {} was not found.", land_ident)
+                    } else {
+                        let deleted = database.delete_housing_furniture_for_estate(*land_ident);
+                        format!("Deleted {deleted} furniture rows for estate {land_ident}.")
+                    }
+                };
+
+                self.send_custom_response(PacketSegment {
+                    segment_type: SegmentType::KawariIpc,
+                    data: SegmentData::KawariIpc(CustomIpcSegment::new(housing_import_result(
+                        message,
+                    ))),
+                    ..Default::default()
+                })
+                .await;
+            }
+            CustomIpcData::ResetHousingEstate { land_ident } => {
+                let message = {
+                    let mut database = self.database.lock();
+                    if database.delete_housing_estate_and_furniture(*land_ident) {
+                        format!("Deleted estate {land_ident} and its furniture rows.")
+                    } else {
+                        format!("Housing estate {} was not found.", land_ident)
+                    }
+                };
+
+                self.send_custom_response(PacketSegment {
+                    segment_type: SegmentType::KawariIpc,
+                    data: SegmentData::KawariIpc(CustomIpcSegment::new(housing_import_result(
+                        message,
+                    ))),
+                    ..Default::default()
+                })
+                .await;
+            }
+            CustomIpcData::UpdateHousingEstateText {
+                land_ident,
+                name,
+                greeting,
+            } => {
+                let message = {
+                    let mut database = self.database.lock();
+                    let updated_name = database.update_housing_name(*land_ident, name);
+                    let updated_greeting = database.update_housing_greeting(*land_ident, greeting);
+
+                    if updated_name || updated_greeting {
+                        format!("Updated estate text for {land_ident}.")
+                    } else {
+                        format!("Housing estate {} was not found.", land_ident)
+                    }
+                };
+
+                self.send_custom_response(PacketSegment {
+                    segment_type: SegmentType::KawariIpc,
+                    data: SegmentData::KawariIpc(CustomIpcSegment::new(housing_import_result(
+                        message,
+                    ))),
+                    ..Default::default()
+                })
+                .await;
+            }
+            CustomIpcData::ExportHousingEstate { land_ident } => {
+                let export_result = {
+                    let mut database = self.database.lock();
+                    database.export_housing_estate(*land_ident)
+                };
+
+                let mut path = String::new();
+                let message = match export_result {
+                    Some(export) => {
+                        let export_dir = PathBuf::from(HOUSING_EXPORTS_DIR);
+                        let export_path = export_dir.join(format!("estate-{land_ident}.json"));
+
+                        match fs::create_dir_all(&export_dir) {
+                            Ok(()) => match serde_json::to_string_pretty(&export) {
+                                Ok(json) => match fs::write(&export_path, json) {
+                                    Ok(()) => {
+                                        path = export_path.to_string_lossy().into_owned();
+                                        format!("Exported estate {land_ident} to {path}.")
+                                    }
+                                    Err(err) => format!(
+                                        "Failed to write export for estate {land_ident}: {err}"
+                                    ),
+                                },
+                                Err(err) => {
+                                    format!("Failed to serialize estate {land_ident} export: {err}")
+                                }
+                            },
+                            Err(err) => format!(
+                                "Failed to create housing export directory for estate {land_ident}: {err}"
+                            ),
+                        }
+                    }
+                    None => format!("Housing estate {} was not found.", land_ident),
+                };
+
+                self.send_custom_response(PacketSegment {
+                    segment_type: SegmentType::KawariIpc,
+                    data: SegmentData::KawariIpc(CustomIpcSegment::new(housing_exported(
+                        path, message,
+                    ))),
+                    ..Default::default()
+                })
+                .await;
+            }
+            CustomIpcData::ImportHousingEstate { path } => {
+                let message = match validate_housing_import_path_for_ipc(path) {
+                    Ok(path) => {
+                        let import_path = PathBuf::from(&path);
+                        match fs::read_to_string(&import_path) {
+                            Ok(contents) => match serde_json::from_str(&contents) {
+                                Ok(export) => {
+                                    let mut database = self.database.lock();
+                                    if database.import_housing_estate(export) {
+                                        format!("Imported housing estate from {path}.")
+                                    } else {
+                                        format!("Failed to import housing estate from {path}.")
+                                    }
+                                }
+                                Err(err) => {
+                                    format!("Failed to parse housing import file {path}: {err}")
+                                }
+                            },
+                            Err(err) => {
+                                format!("Failed to read housing import file {path}: {err}")
+                            }
+                        }
+                    }
+                    Err(message) => message,
+                };
+
+                self.send_custom_response(PacketSegment {
+                    segment_type: SegmentType::KawariIpc,
+                    data: SegmentData::KawariIpc(CustomIpcSegment::new(housing_import_result(
+                        message,
+                    ))),
                     ..Default::default()
                 })
                 .await;

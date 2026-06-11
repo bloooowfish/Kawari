@@ -25,6 +25,7 @@ use kawari::{
     },
 };
 use parking_lot::Mutex;
+use physis::TerritoryIntendedUse;
 
 #[derive(Default, Debug)]
 pub enum NavmeshGenerationStep {
@@ -115,6 +116,10 @@ pub struct Instance {
     pub enemy_ai_disabled: bool,
 }
 
+fn should_load_navmesh_for_intended_use(intended_use: Option<TerritoryIntendedUse>) -> bool {
+    !matches!(intended_use, Some(TerritoryIntendedUse::HousingIndoor))
+}
+
 impl Instance {
     pub fn new(id: u16, game_data: &mut GameData) -> Self {
         let mut instance = Instance {
@@ -124,7 +129,14 @@ impl Instance {
         };
 
         let config = get_config();
-        if config.filesystem.navimesh_path.is_empty() {
+        let intended_use = TerritoryIntendedUse::from_repr(instance.zone.intended_use);
+        if !should_load_navmesh_for_intended_use(intended_use) {
+            tracing::debug!(
+                zone_id = id,
+                intended_use = instance.zone.intended_use,
+                "Skipping navimesh loading for territory intended use"
+            );
+        } else if config.filesystem.navimesh_path.is_empty() {
             tracing::warn!("Navimesh path is not set! Monsters will not function correctly!");
         } else if instance.zone.navimesh_path.is_empty() {
             tracing::warn!("No navimesh path for this zone, skipping generation!");
@@ -424,5 +436,31 @@ impl Instance {
         }
 
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use physis::TerritoryIntendedUse;
+
+    use super::*;
+
+    #[test]
+    fn housing_indoor_skips_navmesh_loading_and_generation() {
+        assert!(!should_load_navmesh_for_intended_use(Some(
+            TerritoryIntendedUse::HousingIndoor,
+        )));
+    }
+
+    #[test]
+    fn housing_outdoor_keeps_navmesh_loading_available() {
+        assert!(should_load_navmesh_for_intended_use(Some(
+            TerritoryIntendedUse::HousingOutdoor,
+        )));
+    }
+
+    #[test]
+    fn unknown_intended_use_keeps_navmesh_loading_available() {
+        assert!(should_load_navmesh_for_intended_use(None));
     }
 }

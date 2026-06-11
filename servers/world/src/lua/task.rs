@@ -4,9 +4,69 @@ use crate::{
 };
 use kawari::{
     common::Position,
-    ipc::zone::{EventType, GrandCompany, SceneFlags, ServerZoneIpcSegment},
+    ipc::zone::{EventType, GrandCompany, PlotSize, SceneFlags, ServerZoneIpcSegment},
     packet::PacketSegment,
 };
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HousingEstateKind {
+    Personal,
+    FreeCompany,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HousingResetMode {
+    Furniture,
+    Estate,
+    All,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HousingKit {
+    Indoor,
+    Outdoor,
+    Npc,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HousingExteriorField {
+    Roof,
+    Walls,
+    Windows,
+    Door,
+    RoofFixture,
+    WallFixture,
+    AboveDoorBanner,
+    Fence,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HousingExteriorColorField {
+    Roof,
+    Walls,
+    Windows,
+    Door,
+    RoofFixture,
+    WallFixture,
+    AboveDoorBanner,
+    Fence,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HousingInteriorField {
+    WindowStyle,
+    DoorStyle,
+    DoorStain,
+    GroundWalls,
+    GroundFloor,
+    GroundChandelier,
+    TopWalls,
+    TopFloor,
+    TopChandelier,
+    CellarWalls,
+    CellarFloor,
+    CellarChandelier,
+}
 
 #[derive(Clone, Debug)]
 pub enum LuaTask {
@@ -67,6 +127,55 @@ pub enum LuaTask {
         quantity: u32,
         send_client_update: bool,
     },
+    ShowHousingPlacard {
+        ward_index: u8,
+        division: u8,
+        plot_index: u8,
+    },
+    EnsureTestApartment {
+        room_number: u16,
+    },
+    EnsureTestHouse {},
+    EnsureTestHouseWithOptions {
+        kind: HousingEstateKind,
+        size: PlotSize,
+        territory_type_id: u16,
+        ward_index: u8,
+        division: u8,
+        plot_index: u8,
+    },
+    ResetHousing {
+        mode: HousingResetMode,
+    },
+    UpdateHousingName {
+        name: String,
+    },
+    UpdateHousingGreeting {
+        greeting: String,
+    },
+    UpdateHousingLight {
+        level: u8,
+    },
+    UpdateHousingExterior {
+        field: HousingExteriorField,
+        value: u16,
+    },
+    UpdateHousingExteriorColor {
+        field: HousingExteriorColorField,
+        value: u8,
+    },
+    UpdateHousingInterior {
+        field: HousingInteriorField,
+        value: u32,
+    },
+    GiveHousingKit {
+        kit: HousingKit,
+    },
+    EnterTestApartment {
+        room_number: u16,
+    },
+    EnterTestHouse {},
+    ExitTestHouse {},
     UnlockContent {
         id: u16,
     },

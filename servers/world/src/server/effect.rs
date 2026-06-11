@@ -307,6 +307,7 @@ pub fn remove_effect(
             zone_data: LuaZone::default(),
             content_data: LuaContent::default(),
             base_parameters: BaseParameters::default(),
+            housing_ward_context: Default::default(),
         };
 
         let key = effect_id as u32;

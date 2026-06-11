@@ -67,6 +67,33 @@ pub struct PartyUpdateTargets {
     pub target_name: String,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HousingFurnitureObject {
+    pub slot: u16,
+    pub catalog_id: u16,
+    pub position: Position,
+    pub rotation: f32,
+    pub indoors: bool,
+    pub plot_index: u8,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub struct HousingFurnitureObjectKey {
+    pub slot: u16,
+    pub indoors: bool,
+    pub plot_index: u8,
+}
+
+impl From<&HousingFurnitureObject> for HousingFurnitureObjectKey {
+    fn from(value: &HousingFurnitureObject) -> Self {
+        Self {
+            slot: value.slot,
+            indoors: value.indoors,
+            plot_index: value.plot_index,
+        }
+    }
+}
+
 /// A type encapsulating various information about a zone chat mesage to be sent.
 #[derive(Clone, Debug, Default)]
 pub struct MessageInfo {
@@ -467,20 +494,14 @@ pub enum ToServer {
     Call(ObjectId, String),
     /// Spawns an NPC defined by the layout or drop-in.
     SpawnLayoutNpc(ObjectId, u32),
+    /// Syncs persisted housing furniture overlay objects into the current instance.
+    SyncHousingFurnitureObjects(ObjectId, Vec<HousingFurnitureObject>),
     /// The client places a piece of furniture.
-    PlaceFurniture(
-        ObjectId,
-        ContainerType,
-        u16,
-        u16,
-        u8,
-        Position,
-        bool,
-        f32,
-        u8,
-    ),
+    PlaceFurniture(ObjectId, HousingFurnitureObject, ContainerType, u16, u8),
     /// The client moves or rotates a piece of furniture.
-    TranslateFurniture(ObjectId, (bool, u8), u16, Position, f32, bool),
+    TranslateFurniture(ObjectId, HousingFurnitureObjectKey, Position, f32),
+    /// The client removes a placed furniture object from the world.
+    RemoveHousingFurnitureObject(ObjectId, HousingFurnitureObjectKey),
     /// The client offers a teleport to nearby party members.
     OfferTeleportToParty(Option<u64>, ObjectId, u16, TeleportQuery),
     /// A Variant Dungeon route was chosen.

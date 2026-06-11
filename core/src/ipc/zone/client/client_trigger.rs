@@ -310,6 +310,30 @@ pub enum ClientTriggerCommand {
         page: u32,
     },
 
+    /// The client requests the Exterior Remodeling window.
+    #[brw(magic = 1101u32)]
+    RequestEstateExteriorRemodel {
+        /// Plot index or land-set entry associated with the exterior being remodeled.
+        plot_index: u32,
+    },
+
+    /// The client requests the Edit Interior material window.
+    #[brw(magic = 1102u32)]
+    RequestEstateInteriorRemodel {},
+
+    /// The client primes or opens the interior remodel flow immediately before requesting the list.
+    ///
+    /// Retail captures send this before `RequestEstateInteriorRemodel`.
+    #[brw(magic = 1111u32)]
+    InteriorRemodelMenuToggled {},
+
+    /// The client applies or cancels an estate appearance remodeling session.
+    ///
+    /// Retail captures show `mode = 0` when confirming changes and `mode = 255`
+    /// when leaving/canceling the remodeling state.
+    #[brw(magic = 1104u32)]
+    FinishEstateRemodel { mode: u32 },
+
     #[brw(magic = 1107u32)]
     RequestHousingWardInfo {
         /// The zone id of the housing ward.
@@ -318,8 +342,27 @@ pub enum ClientTriggerCommand {
         ward_index: u32,
     },
 
+    /// The client requests the Interior Design renovation pattern list.
+    #[brw(magic = 1168u32)]
+    RequestEstateInteriorPattern {
+        /// Retail captures use 255 when opening the list.
+        mode: u32,
+    },
+
+    /// The client applies an Interior Design renovation pattern.
+    #[brw(magic = 1169u32)]
+    ApplyEstateInteriorPattern {
+        mode: u32,
+        /// Row id on the HousingRenovation sheet.
+        renovation_row_id: u32,
+    },
+
+    /// The client requests storage/status information from the Interior Design window.
+    #[brw(magic = 1170u32)]
+    RequestEstateInteriorPatternStatus { mode: u32, unk1: u32 },
+
     /// The client removes a piece of furniture from the world and puts it in their inventory or the storeroom.
-    // TODO: Research is still ongoing for this one
+    /// IDA shows this as ExecuteCommand(1113, house_id_high, house_id_low, storage_id, slot | (to_storeroom << 16)).
     #[brw(magic = 1113u32)]
     MoveHousingItemToInventory {
         /// The house's id.
@@ -329,10 +372,10 @@ pub enum ClientTriggerCommand {
         unk1: [u8; 2], // likely padding
         /// The slot that contains the desired item.
         slot: u16,
-        /// If the item should be moved to the storeroom or not.
+        /// If the item should be moved to the storeroom or not. This is the high word of the final command parameter.
         #[br(map = read_bool_from::<u16>)]
         #[bw(map = write_bool_as::<u16>)]
-        to_storeroom: bool, // TODO: This might actually just be a u8
+        to_storeroom: bool,
     },
 
     /// The client requests the housing inventory be sent to them. This happens automatically after opening the Interior Furnishings menu.
@@ -369,19 +412,24 @@ pub enum ClientTriggerCommand {
     SetInteriorLightLevel {
         /// See HousingInteriorDetails in housing_interior_furniture.rs for further details, but `level` is actually a level of *darkness*, not light, so this CT is a misnomer, but it's more intuitive to just call it a light level...
         level: u32,
-        unk: u32, // Seems to be always 1
+        /// Client-side current/active light byte. It is commonly observed as 1, but IDA shows it is applied separately from `level`.
+        unk: u32,
     },
 
     /// The client places furniture from the storeroom.
+    /// IDA shows this as ExecuteCommand(1150, house_id_high, house_id_low, container_type, container_index).
+    /// The first two u32 parameters are a split HouseId, kept expanded here for layout compatibility.
     #[brw(magic = 1150u32)]
     PlaceFurnitureFromStoreroom {
-        unk1: u8, // Unknown, observed as 0x54/84
-        unk2: u8, // Always 1?
-        /// Seems to be the current world id.
+        /// Low byte of the high 32 bits of the current HouseId; this is the TerritoryType low byte.
+        unk1: u8,
+        /// High byte of the high 32 bits of the current HouseId; this is the TerritoryType high byte.
+        unk2: u8,
+        /// The current HouseId world id.
         world_id: u16,
-        /// Seems to be the affected plot's index.
+        /// Low word of the current HouseId: unit, unknown byte, ward, and room bits.
         plot_index: u16,
-        /// Seems to be the affected ward's index.
+        /// High word of the current HouseId low 32 bits.
         ward_index: u16,
         /// The source container to retrieve the item from.
         container_type: ContainerType,
@@ -573,5 +621,113 @@ mod tests {
                 object_type: ObjectTypeKind::EObjOrNpc,
             }
         )
+    }
+
+    #[test]
+    fn read_request_estate_exterior_remodel() {
+        let mut bytes = vec![0u8; 32];
+        bytes[0..4].copy_from_slice(&1101u32.to_le_bytes());
+        bytes[4..8].copy_from_slice(&5u32.to_le_bytes());
+
+        let mut buffer = Cursor::new(bytes);
+        let trigger = ClientTrigger::read_le(&mut buffer).unwrap();
+
+        assert_eq!(
+            trigger.trigger,
+            ClientTriggerCommand::RequestEstateExteriorRemodel { plot_index: 5 }
+        );
+    }
+
+    #[test]
+    fn read_request_estate_interior_remodel() {
+        let mut bytes = vec![0u8; 32];
+        bytes[0..4].copy_from_slice(&1102u32.to_le_bytes());
+
+        let mut buffer = Cursor::new(bytes);
+        let trigger = ClientTrigger::read_le(&mut buffer).unwrap();
+
+        assert_eq!(
+            trigger.trigger,
+            ClientTriggerCommand::RequestEstateInteriorRemodel {}
+        );
+    }
+
+    #[test]
+    fn read_interior_remodel_menu_toggled() {
+        let mut bytes = vec![0u8; 32];
+        bytes[0..4].copy_from_slice(&1111u32.to_le_bytes());
+
+        let mut buffer = Cursor::new(bytes);
+        let trigger = ClientTrigger::read_le(&mut buffer).unwrap();
+
+        assert_eq!(
+            trigger.trigger,
+            ClientTriggerCommand::InteriorRemodelMenuToggled {}
+        );
+    }
+
+    #[test]
+    fn read_finish_estate_remodel() {
+        let mut bytes = vec![0u8; 32];
+        bytes[0..4].copy_from_slice(&1104u32.to_le_bytes());
+        bytes[4..8].copy_from_slice(&0u32.to_le_bytes());
+
+        let mut buffer = Cursor::new(bytes);
+        let trigger = ClientTrigger::read_le(&mut buffer).unwrap();
+
+        assert_eq!(
+            trigger.trigger,
+            ClientTriggerCommand::FinishEstateRemodel { mode: 0 }
+        );
+    }
+
+    #[test]
+    fn read_request_estate_interior_pattern() {
+        let mut bytes = vec![0u8; 32];
+        bytes[0..4].copy_from_slice(&1168u32.to_le_bytes());
+        bytes[4..8].copy_from_slice(&255u32.to_le_bytes());
+
+        let mut buffer = Cursor::new(bytes);
+        let trigger = ClientTrigger::read_le(&mut buffer).unwrap();
+
+        assert_eq!(
+            trigger.trigger,
+            ClientTriggerCommand::RequestEstateInteriorPattern { mode: 255 }
+        );
+    }
+
+    #[test]
+    fn read_apply_estate_interior_pattern() {
+        let mut bytes = vec![0u8; 32];
+        bytes[0..4].copy_from_slice(&1169u32.to_le_bytes());
+        bytes[4..8].copy_from_slice(&0u32.to_le_bytes());
+        bytes[8..12].copy_from_slice(&2u32.to_le_bytes());
+
+        let mut buffer = Cursor::new(bytes);
+        let trigger = ClientTrigger::read_le(&mut buffer).unwrap();
+
+        assert_eq!(
+            trigger.trigger,
+            ClientTriggerCommand::ApplyEstateInteriorPattern {
+                mode: 0,
+                renovation_row_id: 2
+            }
+        );
+    }
+
+    #[test]
+    fn read_request_estate_interior_pattern_status() {
+        let mut bytes = vec![0u8; 32];
+        bytes[0..4].copy_from_slice(&1170u32.to_le_bytes());
+        bytes[4..8].copy_from_slice(&0u32.to_le_bytes());
+        bytes[8..12].copy_from_slice(&7u32.to_le_bytes());
+
+        let mut buffer = Cursor::new(bytes);
+        let trigger = ClientTrigger::read_le(&mut buffer).unwrap();
+
+        assert_eq!(
+            trigger.trigger,
+            ClientTriggerCommand::RequestEstateInteriorPatternStatus { mode: 0, unk1: 7 }
+        );
     }
 }

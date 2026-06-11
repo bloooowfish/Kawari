@@ -3,13 +3,14 @@ use bitflags::bitflags;
 
 use crate::ipc::zone::SocialListUILanguages;
 
-// TODO: Rename to DutyFinderSetting
 #[binrw]
-#[derive(Clone, Copy, Eq, PartialEq, Default)]
-pub struct DutyFinderSetting(u64);
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub struct ContentRegistrationFlags(u64);
 
 bitflags! {
-    impl DutyFinderSetting: u64 {
+    impl ContentRegistrationFlags: u64 {
+        /// No special settings were enabled.
+        const NONE = 0x0;
         /// Enables join party in progress mode.
         const JOIN_PARTY_IN_PROGRESS = 0x2;
         /// Enables unrestricted party mode.
@@ -25,7 +26,13 @@ bitflags! {
     }
 }
 
-impl std::fmt::Debug for DutyFinderSetting {
+impl Default for ContentRegistrationFlags {
+    fn default() -> Self {
+        ContentRegistrationFlags::NONE
+    }
+}
+
+impl std::fmt::Debug for ContentRegistrationFlags {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         bitflags::parser::to_writer(self, f)
     }
@@ -36,7 +43,7 @@ impl std::fmt::Debug for DutyFinderSetting {
 pub struct QueueDuties {
     unk1: [u8; 8],
     /// The settings the client is queuing with.
-    pub settings: DutyFinderSetting,
+    pub flags: ContentRegistrationFlags,
     /// Selected languages to match with.
     pub languages: SocialListUILanguages,
     unk3: u8,

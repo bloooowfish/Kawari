@@ -4,21 +4,25 @@ use mlua::{LuaSerdeExt, UserData, UserDataFields, UserDataMethods, Value};
 use parking_lot::Mutex;
 
 use crate::{
-    GameData, PlayerData, RemakeMode, StatusEffects,
+    GameData, MAX_APARTMENT_ROOM_NUMBER, PlayerData, RemakeMode, StatusEffects,
     inventory::{CrystalKind, CurrencyKind},
-    zone_connection::BaseParameters,
+    zone_connection::{ActiveHousingWardContext, BaseParameters},
 };
 use kawari::{
     common::{HandlerId, ObjectTypeId, ObjectTypeKind, Position, adjust_quest_id},
     ipc::zone::{
         ActorControlCategory, ActorControlSelf, ActorSetPos, EventType, GrandCompany, OnlineStatus,
-        SceneFlags, ServerNoticeFlags, ServerNoticeMessage, ServerZoneIpcData,
+        PlotSize, SceneFlags, ServerNoticeFlags, ServerNoticeMessage, ServerZoneIpcData,
         ServerZoneIpcSegment,
     },
     packet::PacketSegment,
 };
 
-use super::{LuaTask, LuaZone, QueueSegments, create_ipc_self};
+use super::housing_placard_location_from_event_arg;
+use super::{
+    HousingEstateKind, HousingExteriorColorField, HousingExteriorField, HousingInteriorField,
+    HousingKit, HousingResetMode, LuaTask, LuaZone, QueueSegments, create_ipc_self,
+};
 
 #[derive(Default, Clone, Copy)]
 pub struct LuaContent {
@@ -45,6 +49,7 @@ pub struct LuaPlayer {
     pub content_data: LuaContent,
     // TODO: move this into PlayerData
     pub base_parameters: BaseParameters,
+    pub housing_ward_context: ActiveHousingWardContext,
 }
 
 impl QueueSegments for LuaPlayer {
@@ -228,6 +233,100 @@ impl LuaPlayer {
             quantity,
             send_client_update,
         });
+    }
+
+    fn show_housing_placard(&mut self, ward_index: u8, division: u8, plot_index: u8) {
+        self.queued_tasks.push(LuaTask::ShowHousingPlacard {
+            ward_index,
+            division,
+            plot_index,
+        });
+    }
+
+    fn ensure_test_apartment(&mut self, room_number: u16) {
+        if !valid_apartment_room_number(room_number) {
+            return;
+        }
+
+        self.queued_tasks
+            .push(LuaTask::EnsureTestApartment { room_number });
+    }
+
+    fn ensure_test_house(&mut self) {
+        self.queued_tasks.push(LuaTask::EnsureTestHouse {});
+    }
+
+    fn ensure_test_house_with_options(
+        &mut self,
+        kind: HousingEstateKind,
+        size: PlotSize,
+        territory_type_id: u16,
+        ward_index: u8,
+        division: u8,
+        plot_index: u8,
+    ) {
+        self.queued_tasks.push(LuaTask::EnsureTestHouseWithOptions {
+            kind,
+            size,
+            territory_type_id,
+            ward_index,
+            division,
+            plot_index,
+        });
+    }
+
+    fn reset_housing(&mut self, mode: HousingResetMode) {
+        self.queued_tasks.push(LuaTask::ResetHousing { mode });
+    }
+
+    fn update_housing_name(&mut self, name: String) {
+        self.queued_tasks.push(LuaTask::UpdateHousingName { name });
+    }
+
+    fn update_housing_greeting(&mut self, greeting: String) {
+        self.queued_tasks
+            .push(LuaTask::UpdateHousingGreeting { greeting });
+    }
+
+    fn update_housing_light(&mut self, level: u8) {
+        self.queued_tasks
+            .push(LuaTask::UpdateHousingLight { level });
+    }
+
+    fn update_housing_exterior(&mut self, field: HousingExteriorField, value: u16) {
+        self.queued_tasks
+            .push(LuaTask::UpdateHousingExterior { field, value });
+    }
+
+    fn update_housing_exterior_color(&mut self, field: HousingExteriorColorField, value: u8) {
+        self.queued_tasks
+            .push(LuaTask::UpdateHousingExteriorColor { field, value });
+    }
+
+    fn update_housing_interior(&mut self, field: HousingInteriorField, value: u32) {
+        self.queued_tasks
+            .push(LuaTask::UpdateHousingInterior { field, value });
+    }
+
+    fn give_housing_kit(&mut self, kit: HousingKit) {
+        self.queued_tasks.push(LuaTask::GiveHousingKit { kit });
+    }
+
+    fn enter_test_apartment(&mut self, room_number: u16) {
+        if !valid_apartment_room_number(room_number) {
+            return;
+        }
+
+        self.queued_tasks
+            .push(LuaTask::EnterTestApartment { room_number });
+    }
+
+    fn enter_test_house(&mut self) {
+        self.queued_tasks.push(LuaTask::EnterTestHouse {});
+    }
+
+    fn exit_test_house(&mut self) {
+        self.queued_tasks.push(LuaTask::ExitTestHouse {});
     }
 
     fn unlock_content(&mut self, id: u16) {
@@ -599,6 +698,10 @@ impl LuaPlayer {
     }
 }
 
+fn valid_apartment_room_number(room_number: u16) -> bool {
+    (1..=MAX_APARTMENT_ROOM_NUMBER).contains(&room_number)
+}
+
 impl UserData for LuaPlayer {
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
         methods.add_method_mut(
@@ -739,6 +842,124 @@ impl UserData for LuaPlayer {
         methods.add_method_mut("add_item", |_, this, (id, quantity): (u32, u32)| {
             // Can't think of any situations where we wouldn't want to force a client inventory update after using debug commands.
             this.add_item(id, quantity, true);
+            Ok(())
+        });
+        methods.add_method_mut(
+            "show_housing_placard",
+            |_, this, (ward_index, division, plot_index): (u8, u8, u8)| {
+                this.show_housing_placard(ward_index, division, plot_index);
+                Ok(())
+            },
+        );
+        methods.add_method("get_housing_ward_context", |lua, this, _: ()| {
+            let context = lua.create_table()?;
+            context.set(
+                "territory_type_id",
+                this.housing_ward_context.territory_type_id,
+            )?;
+            context.set("ward_index", this.housing_ward_context.ward_index)?;
+            context.set("division", this.housing_ward_context.division)?;
+            Ok(context)
+        });
+        methods.add_method(
+            "get_housing_placard_location",
+            |lua, this, event_arg: u32| {
+                let location = housing_placard_location_from_event_arg(
+                    event_arg,
+                    this.housing_ward_context.division,
+                );
+                let table = lua.create_table()?;
+                table.set("division", location.division)?;
+                table.set("plot_index", location.plot_index)?;
+                Ok(table)
+            },
+        );
+        methods.add_method_mut("ensure_test_house", |_, this, _: ()| {
+            this.ensure_test_house();
+            Ok(())
+        });
+        methods.add_method_mut("ensure_test_apartment", |_, this, room_number: u16| {
+            this.ensure_test_apartment(room_number);
+            Ok(())
+        });
+        methods.add_method_mut(
+            "ensure_test_house_with_options",
+            |_,
+             this,
+             (kind, size, territory_type_id, ward_index, division, plot_index): (
+                String,
+                String,
+                u16,
+                u8,
+                u8,
+                u8,
+            )| {
+                this.ensure_test_house_with_options(
+                    parse_housing_estate_kind(&kind)?,
+                    parse_housing_plot_size(&size)?,
+                    territory_type_id,
+                    ward_index,
+                    division,
+                    plot_index,
+                );
+                Ok(())
+            },
+        );
+        methods.add_method_mut("reset_housing", |_, this, mode: String| {
+            this.reset_housing(parse_housing_reset_mode(&mode)?);
+            Ok(())
+        });
+        methods.add_method_mut("update_housing_name", |_, this, name: String| {
+            this.update_housing_name(name);
+            Ok(())
+        });
+        methods.add_method_mut("update_housing_greeting", |_, this, greeting: String| {
+            this.update_housing_greeting(greeting);
+            Ok(())
+        });
+        methods.add_method_mut("update_housing_light", |_, this, level: u8| {
+            this.update_housing_light(level);
+            Ok(())
+        });
+        methods.add_method_mut(
+            "update_housing_exterior",
+            |_, this, (field, value): (String, u16)| {
+                this.update_housing_exterior(parse_housing_exterior_field(&field)?, value);
+                Ok(())
+            },
+        );
+        methods.add_method_mut(
+            "update_housing_exterior_color",
+            |_, this, (field, value): (String, u8)| {
+                this.update_housing_exterior_color(
+                    parse_housing_exterior_color_field(&field)?,
+                    value,
+                );
+                Ok(())
+            },
+        );
+        methods.add_method_mut(
+            "update_housing_interior",
+            |_, this, (field, value): (String, u32)| {
+                let field = parse_housing_interior_field(&field)?;
+                this.update_housing_interior(field, validate_housing_interior_value(field, value)?);
+                Ok(())
+            },
+        );
+        methods.add_method_mut("give_housing_kit", |_, this, kit: String| {
+            this.give_housing_kit(parse_housing_kit(&kit)?);
+            Ok(())
+        });
+        methods.add_method_mut("enter_test_house", |_, this, _: ()| {
+            this.enter_test_house();
+            Ok(())
+        });
+        methods.add_method_mut("enter_test_apartment", |_, this, room_number: u16| {
+            this.enter_test_apartment(room_number);
+            Ok(())
+        });
+        methods.add_method_mut("exit_test_house", |_, this, _: ()| {
+            this.exit_test_house();
             Ok(())
         });
         methods.add_method_mut("unlock_content", |_, this, id: u16| {
@@ -1091,5 +1312,526 @@ impl UserData for LuaPlayer {
             Ok(this.player_data.grand_company.active_company)
         });
         fields.add_field_method_get("city_state", |_, this| Ok(this.player_data.city_state));
+    }
+}
+
+fn parse_housing_estate_kind(value: &str) -> mlua::Result<HousingEstateKind> {
+    match value.to_ascii_lowercase().as_str() {
+        "personal" => Ok(HousingEstateKind::Personal),
+        "fc" | "freecompany" | "free_company" => Ok(HousingEstateKind::FreeCompany),
+        _ => Err(mlua::Error::external(format!(
+            "invalid housing estate kind: {value}"
+        ))),
+    }
+}
+
+fn parse_housing_plot_size(value: &str) -> mlua::Result<PlotSize> {
+    match value.to_ascii_lowercase().as_str() {
+        "small" => Ok(PlotSize::Small),
+        "medium" => Ok(PlotSize::Medium),
+        "large" => Ok(PlotSize::Large),
+        _ => Err(mlua::Error::external(format!(
+            "invalid housing plot size: {value}"
+        ))),
+    }
+}
+
+fn parse_housing_reset_mode(value: &str) -> mlua::Result<HousingResetMode> {
+    match value.to_ascii_lowercase().as_str() {
+        "furniture" => Ok(HousingResetMode::Furniture),
+        "estate" => Ok(HousingResetMode::Estate),
+        "all" => Ok(HousingResetMode::All),
+        _ => Err(mlua::Error::external(format!(
+            "invalid housing reset mode: {value}"
+        ))),
+    }
+}
+
+fn parse_housing_kit(value: &str) -> mlua::Result<HousingKit> {
+    match value.to_ascii_lowercase().as_str() {
+        "indoor" => Ok(HousingKit::Indoor),
+        "outdoor" => Ok(HousingKit::Outdoor),
+        "npc" => Ok(HousingKit::Npc),
+        _ => Err(mlua::Error::external(format!(
+            "invalid housing kit: {value}"
+        ))),
+    }
+}
+
+fn parse_housing_exterior_field(value: &str) -> mlua::Result<HousingExteriorField> {
+    match value.to_ascii_lowercase().as_str() {
+        "roof" => Ok(HousingExteriorField::Roof),
+        "walls" => Ok(HousingExteriorField::Walls),
+        "windows" => Ok(HousingExteriorField::Windows),
+        "door" => Ok(HousingExteriorField::Door),
+        "roof_fixture" => Ok(HousingExteriorField::RoofFixture),
+        "wall_fixture" => Ok(HousingExteriorField::WallFixture),
+        "above_door_banner" => Ok(HousingExteriorField::AboveDoorBanner),
+        "fence" => Ok(HousingExteriorField::Fence),
+        _ => Err(mlua::Error::external(format!(
+            "invalid housing exterior field: {value}"
+        ))),
+    }
+}
+
+fn parse_housing_exterior_color_field(value: &str) -> mlua::Result<HousingExteriorColorField> {
+    match value.to_ascii_lowercase().as_str() {
+        "roof" => Ok(HousingExteriorColorField::Roof),
+        "walls" => Ok(HousingExteriorColorField::Walls),
+        "windows" => Ok(HousingExteriorColorField::Windows),
+        "door" => Ok(HousingExteriorColorField::Door),
+        "roof_fixture" => Ok(HousingExteriorColorField::RoofFixture),
+        "wall_fixture" => Ok(HousingExteriorColorField::WallFixture),
+        "above_door_banner" => Ok(HousingExteriorColorField::AboveDoorBanner),
+        "fence" => Ok(HousingExteriorColorField::Fence),
+        _ => Err(mlua::Error::external(format!(
+            "invalid housing exterior color field: {value}"
+        ))),
+    }
+}
+
+fn parse_housing_interior_field(value: &str) -> mlua::Result<HousingInteriorField> {
+    match value.to_ascii_lowercase().as_str() {
+        "window_style" => Ok(HousingInteriorField::WindowStyle),
+        "door_style" => Ok(HousingInteriorField::DoorStyle),
+        "door_stain" => Ok(HousingInteriorField::DoorStain),
+        "ground_walls" => Ok(HousingInteriorField::GroundWalls),
+        "ground_floor" => Ok(HousingInteriorField::GroundFloor),
+        "ground_chandelier" => Ok(HousingInteriorField::GroundChandelier),
+        "top_walls" => Ok(HousingInteriorField::TopWalls),
+        "top_floor" => Ok(HousingInteriorField::TopFloor),
+        "top_chandelier" => Ok(HousingInteriorField::TopChandelier),
+        "cellar_walls" => Ok(HousingInteriorField::CellarWalls),
+        "cellar_floor" => Ok(HousingInteriorField::CellarFloor),
+        "cellar_chandelier" => Ok(HousingInteriorField::CellarChandelier),
+        _ => Err(mlua::Error::external(format!(
+            "invalid housing interior field: {value}"
+        ))),
+    }
+}
+
+fn validate_housing_interior_value(field: HousingInteriorField, value: u32) -> mlua::Result<u32> {
+    if matches!(
+        field,
+        HousingInteriorField::WindowStyle
+            | HousingInteriorField::DoorStyle
+            | HousingInteriorField::DoorStain
+    ) && value > u16::MAX as u32
+    {
+        return Err(mlua::Error::external(format!(
+            "value {value} is out of range for {field:?}"
+        )));
+    }
+
+    Ok(value)
+}
+
+#[cfg(test)]
+mod tests {
+    use kawari::ipc::zone::PlotSize;
+    use mlua::Function;
+
+    use super::*;
+    use crate::lua::{
+        HousingEstateKind, HousingExteriorColorField, HousingExteriorField, HousingInteriorField,
+        HousingKit, HousingResetMode,
+    };
+
+    #[test]
+    fn housing_lua_testhouse_command_queues_zero_based_options() {
+        let lua = mlua::Lua::new();
+        lua.globals().set("GM_RANK_DEBUG", 1).unwrap();
+        lua.globals()
+            .set(
+                "printf",
+                lua.create_function(|_, _: mlua::MultiValue| Ok(()))
+                    .unwrap(),
+            )
+            .unwrap();
+        lua.load(include_str!(
+            "../../../../resources/scripts/commands/gm/Housing.lua"
+        ))
+        .exec()
+        .unwrap();
+
+        let player = lua.create_userdata(LuaPlayer::default()).unwrap();
+        let args = lua.create_table().unwrap();
+        args.set(1, "testhouse").unwrap();
+        args.set(2, "fc").unwrap();
+        args.set(3, "medium").unwrap();
+        args.set(4, "341").unwrap();
+        args.set(5, "3").unwrap();
+        args.set(6, "13").unwrap();
+
+        let on_command: Function = lua.globals().get("onCommand").unwrap();
+        on_command
+            .call::<()>((player.clone(), args, "housing"))
+            .unwrap();
+
+        let player = player.borrow::<LuaPlayer>().unwrap();
+        match player.queued_tasks.as_slice() {
+            [
+                LuaTask::EnsureTestHouseWithOptions {
+                    kind,
+                    size,
+                    territory_type_id,
+                    ward_index,
+                    division,
+                    plot_index,
+                },
+            ] => {
+                assert_eq!(*kind, HousingEstateKind::FreeCompany);
+                assert_eq!(*size, PlotSize::Medium);
+                assert_eq!(*territory_type_id, 341);
+                assert_eq!(*ward_index, 2);
+                assert_eq!(*division, 0);
+                assert_eq!(*plot_index, 12);
+            }
+            other => panic!("unexpected tasks: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ensure_test_house_with_options_queues_parameterized_task() {
+        let mut player = LuaPlayer::default();
+
+        player.ensure_test_house_with_options(
+            HousingEstateKind::FreeCompany,
+            PlotSize::Medium,
+            341,
+            2,
+            1,
+            12,
+        );
+
+        match player.queued_tasks.as_slice() {
+            [
+                LuaTask::EnsureTestHouseWithOptions {
+                    kind,
+                    size,
+                    territory_type_id,
+                    ward_index,
+                    division,
+                    plot_index,
+                },
+            ] => {
+                assert_eq!(*kind, HousingEstateKind::FreeCompany);
+                assert_eq!(*size, PlotSize::Medium);
+                assert_eq!(*territory_type_id, 341);
+                assert_eq!(*ward_index, 2);
+                assert_eq!(*division, 1);
+                assert_eq!(*plot_index, 12);
+            }
+            other => panic!("unexpected tasks: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn apartment_methods_queue_room_tasks() {
+        let mut player = LuaPlayer::default();
+
+        player.ensure_test_apartment(1);
+        player.enter_test_apartment(1);
+
+        match player.queued_tasks.as_slice() {
+            [
+                LuaTask::EnsureTestApartment { room_number },
+                LuaTask::EnterTestApartment {
+                    room_number: enter_room_number,
+                },
+            ] => {
+                assert_eq!(*room_number, 1);
+                assert_eq!(*enter_room_number, 1);
+            }
+            other => panic!("unexpected tasks: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn housing_reset_name_greeting_light_and_kit_queue_tasks() {
+        let mut player = LuaPlayer::default();
+
+        player.reset_housing(HousingResetMode::Furniture);
+        player.update_housing_name("My Estate".to_string());
+        player.update_housing_greeting("Welcome home".to_string());
+        player.update_housing_light(3);
+        player.give_housing_kit(HousingKit::Indoor);
+
+        assert!(matches!(
+            player.queued_tasks[0],
+            LuaTask::ResetHousing {
+                mode: HousingResetMode::Furniture
+            }
+        ));
+        assert!(matches!(
+            &player.queued_tasks[1],
+            LuaTask::UpdateHousingName { name } if name == "My Estate"
+        ));
+        assert!(matches!(
+            &player.queued_tasks[2],
+            LuaTask::UpdateHousingGreeting { greeting } if greeting == "Welcome home"
+        ));
+        assert!(matches!(
+            player.queued_tasks[3],
+            LuaTask::UpdateHousingLight { level: 3 }
+        ));
+        assert!(matches!(
+            player.queued_tasks[4],
+            LuaTask::GiveHousingKit {
+                kit: HousingKit::Indoor
+            }
+        ));
+    }
+
+    #[test]
+    fn housing_fixture_methods_queue_exterior_and_interior_tasks() {
+        let mut player = LuaPlayer::default();
+
+        player.update_housing_exterior(HousingExteriorField::Roof, 12);
+        player.update_housing_exterior_color(HousingExteriorColorField::Walls, 5);
+        player.update_housing_interior(HousingInteriorField::GroundFloor, 65591);
+
+        assert!(matches!(
+            player.queued_tasks[0],
+            LuaTask::UpdateHousingExterior {
+                field: HousingExteriorField::Roof,
+                value: 12
+            }
+        ));
+        assert!(matches!(
+            player.queued_tasks[1],
+            LuaTask::UpdateHousingExteriorColor {
+                field: HousingExteriorColorField::Walls,
+                value: 5
+            }
+        ));
+        assert!(matches!(
+            player.queued_tasks[2],
+            LuaTask::UpdateHousingInterior {
+                field: HousingInteriorField::GroundFloor,
+                value: 65591
+            }
+        ));
+    }
+
+    #[test]
+    fn housing_lua_fixture_commands_queue_expected_tasks() {
+        let lua = mlua::Lua::new();
+        lua.globals().set("GM_RANK_DEBUG", 1).unwrap();
+        lua.globals()
+            .set(
+                "printf",
+                lua.create_function(|_, _: mlua::MultiValue| Ok(()))
+                    .unwrap(),
+            )
+            .unwrap();
+        lua.load(include_str!(
+            "../../../../resources/scripts/commands/gm/Housing.lua"
+        ))
+        .exec()
+        .unwrap();
+
+        let player = lua.create_userdata(LuaPlayer::default()).unwrap();
+        let on_command: Function = lua.globals().get("onCommand").unwrap();
+
+        let exterior_args = lua.create_table().unwrap();
+        exterior_args.set(1, "exterior").unwrap();
+        exterior_args.set(2, "color").unwrap();
+        exterior_args.set(3, "walls").unwrap();
+        exterior_args.set(4, "5").unwrap();
+        on_command
+            .call::<()>((player.clone(), exterior_args, "housing"))
+            .unwrap();
+
+        let interior_args = lua.create_table().unwrap();
+        interior_args.set(1, "interior").unwrap();
+        interior_args.set(2, "ground_floor").unwrap();
+        interior_args.set(3, "65591").unwrap();
+        on_command
+            .call::<()>((player.clone(), interior_args, "housing"))
+            .unwrap();
+
+        let player = player.borrow::<LuaPlayer>().unwrap();
+        assert!(matches!(
+            player.queued_tasks[0],
+            LuaTask::UpdateHousingExteriorColor {
+                field: HousingExteriorColorField::Walls,
+                value: 5
+            }
+        ));
+        assert!(matches!(
+            player.queued_tasks[1],
+            LuaTask::UpdateHousingInterior {
+                field: HousingInteriorField::GroundFloor,
+                value: 65591
+            }
+        ));
+    }
+
+    #[test]
+    fn housing_lua_interior_preset_queues_capture_shirogane_medium_mist_style_fixture_tasks() {
+        let lua = mlua::Lua::new();
+        lua.globals().set("GM_RANK_DEBUG", 1).unwrap();
+        lua.globals()
+            .set(
+                "printf",
+                lua.create_function(|_, _: mlua::MultiValue| Ok(()))
+                    .unwrap(),
+            )
+            .unwrap();
+        lua.load(include_str!(
+            "../../../../resources/scripts/commands/gm/Housing.lua"
+        ))
+        .exec()
+        .unwrap();
+
+        let player = lua.create_userdata(LuaPlayer::default()).unwrap();
+        let on_command: Function = lua.globals().get("onCommand").unwrap();
+
+        let args = lua.create_table().unwrap();
+        args.set(1, "interior").unwrap();
+        args.set(2, "preset").unwrap();
+        args.set(3, "capture_shirogane_medium_mist_style").unwrap();
+        on_command
+            .call::<()>((player.clone(), args, "housing"))
+            .unwrap();
+
+        let player = player.borrow::<LuaPlayer>().unwrap();
+        let tasks = &player.queued_tasks;
+        assert_eq!(tasks.len(), 12);
+        assert!(matches!(
+            tasks[0],
+            LuaTask::UpdateHousingInterior {
+                field: HousingInteriorField::WindowStyle,
+                value: 2601
+            }
+        ));
+        assert!(matches!(
+            tasks[1],
+            LuaTask::UpdateHousingInterior {
+                field: HousingInteriorField::DoorStyle,
+                value: 553
+            }
+        ));
+        assert!(matches!(
+            tasks[2],
+            LuaTask::UpdateHousingInterior {
+                field: HousingInteriorField::DoorStain,
+                value: 365
+            }
+        ));
+        assert!(matches!(
+            tasks[5],
+            LuaTask::UpdateHousingInterior {
+                field: HousingInteriorField::GroundChandelier,
+                value: 65821
+            }
+        ));
+        assert!(matches!(
+            tasks[8],
+            LuaTask::UpdateHousingInterior {
+                field: HousingInteriorField::TopChandelier,
+                value: 65848
+            }
+        ));
+        assert!(matches!(
+            tasks[11],
+            LuaTask::UpdateHousingInterior {
+                field: HousingInteriorField::CellarChandelier,
+                value: 65796
+            }
+        ));
+    }
+
+    #[test]
+    fn housing_lua_apartment_commands_queue_room_one() {
+        let lua = mlua::Lua::new();
+        lua.globals().set("GM_RANK_DEBUG", 1).unwrap();
+        lua.globals()
+            .set(
+                "printf",
+                lua.create_function(|_, _: mlua::MultiValue| Ok(()))
+                    .unwrap(),
+            )
+            .unwrap();
+        lua.load(include_str!(
+            "../../../../resources/scripts/commands/gm/Housing.lua"
+        ))
+        .exec()
+        .unwrap();
+
+        let player = lua.create_userdata(LuaPlayer::default()).unwrap();
+        let on_command: Function = lua.globals().get("onCommand").unwrap();
+
+        let apartment_args = lua.create_table().unwrap();
+        apartment_args.set(1, "apartment").unwrap();
+        apartment_args.set(2, "1").unwrap();
+        on_command
+            .call::<()>((player.clone(), apartment_args, "housing"))
+            .unwrap();
+
+        let enter_apartment_args = lua.create_table().unwrap();
+        enter_apartment_args.set(1, "enter").unwrap();
+        enter_apartment_args.set(2, "apartment").unwrap();
+        enter_apartment_args.set(3, "1").unwrap();
+        on_command
+            .call::<()>((player.clone(), enter_apartment_args, "housing"))
+            .unwrap();
+
+        let player = player.borrow::<LuaPlayer>().unwrap();
+        match player.queued_tasks.as_slice() {
+            [
+                LuaTask::EnsureTestApartment { room_number },
+                LuaTask::EnterTestApartment {
+                    room_number: enter_room_number,
+                },
+            ] => {
+                assert_eq!(*room_number, 1);
+                assert_eq!(*enter_room_number, 1);
+            }
+            other => panic!("unexpected tasks: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn housing_lua_apartment_commands_reject_room_numbers_above_packed_limit() {
+        let lua = mlua::Lua::new();
+        lua.globals().set("GM_RANK_DEBUG", 1).unwrap();
+        lua.globals()
+            .set(
+                "printf",
+                lua.create_function(|_, _: mlua::MultiValue| Ok(()))
+                    .unwrap(),
+            )
+            .unwrap();
+        lua.load(include_str!(
+            "../../../../resources/scripts/commands/gm/Housing.lua"
+        ))
+        .exec()
+        .unwrap();
+
+        let player = lua.create_userdata(LuaPlayer::default()).unwrap();
+        let on_command: Function = lua.globals().get("onCommand").unwrap();
+
+        let apartment_args = lua.create_table().unwrap();
+        apartment_args.set(1, "apartment").unwrap();
+        apartment_args.set(2, "1024").unwrap();
+        on_command
+            .call::<()>((player.clone(), apartment_args, "housing"))
+            .unwrap();
+
+        let enter_apartment_args = lua.create_table().unwrap();
+        enter_apartment_args.set(1, "enter").unwrap();
+        enter_apartment_args.set(2, "apartment").unwrap();
+        enter_apartment_args.set(3, "1024").unwrap();
+        on_command
+            .call::<()>((player.clone(), enter_apartment_args, "housing"))
+            .unwrap();
+
+        let player = player.borrow::<LuaPlayer>().unwrap();
+        assert!(
+            player.queued_tasks.is_empty(),
+            "Lua boundary must reject apartment rooms above the packed HouseId limit"
+        );
     }
 }

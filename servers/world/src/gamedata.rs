@@ -27,7 +27,10 @@ use icarus::GilShopItem::GilShopItemSheet;
 use icarus::GimmickRect::{GimmickRectRow, GimmickRectSheet};
 use icarus::HalloweenNpcSelect::HalloweenNpcSelectSheet;
 use icarus::HousingAethernet::HousingAethernetSheet;
+use icarus::HousingFurniture::HousingFurnitureSheet;
 use icarus::HousingLandSet::{HousingLandSetSheet, LandSetElement};
+use icarus::HousingTrainingDoll::HousingTrainingDollSheet;
+use icarus::HousingYardObject::HousingYardObjectSheet;
 use icarus::IKDRoute::IKDRouteSheet;
 use icarus::InstanceContent::InstanceContentSheet;
 use icarus::Item::ItemSheet;
@@ -91,11 +94,150 @@ pub struct GameData {
     pub content_finder_condition_sheet: ContentFinderConditionSheet,
     pub instance_content_sheet: InstanceContentSheet,
     pub ikd_route_sheet: IKDRouteSheet,
+    pub housing_furniture_sheet: HousingFurnitureSheet,
+    pub housing_yard_object_sheet: HousingYardObjectSheet,
+    pub housing_training_doll_sheet: HousingTrainingDollSheet,
 }
 
 impl Default for GameData {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use icarus::HousingIndoorTerritory::HousingIndoorTerritorySheet;
+    use icarus::HousingRenovation::HousingRenovationSheet;
+
+    #[test]
+    fn housing_furniture_sheet_row_id_uses_retail_prefixes() {
+        assert_eq!(housing_furniture_sheet_row_id(0x0123, true), 0x0003_0123);
+        assert_eq!(housing_furniture_sheet_row_id(0x0123, false), 0x0002_0123);
+        assert_eq!(housing_furniture_sheet_row_id(0x0309, true), 0x0003_0309);
+        assert_eq!(housing_furniture_sheet_row_id(0x005E, false), 0x0002_005E);
+    }
+
+    #[test]
+    fn housing_furniture_usage_flags_interactable_rows() {
+        assert!(!housing_furniture_usage_is_interactable(0, 0, 0));
+        assert!(housing_furniture_usage_is_interactable(7, 0, 0));
+        assert!(housing_furniture_usage_is_interactable(0, 42, 0));
+        assert!(housing_furniture_usage_is_interactable(0, 0, 99));
+    }
+
+    #[test]
+    fn furniture_catalog_id_accepts_retail_prefixed_housing_links() {
+        assert_eq!(
+            furniture_catalog_id_from_item_data(0x0002_1234, 0),
+            Some(0x1234)
+        );
+        assert_eq!(
+            furniture_catalog_id_from_item_data(0x0003_1234, 0),
+            Some(0x1234)
+        );
+        assert_eq!(
+            furniture_catalog_id_from_item_data(0x1234, 57),
+            Some(0x1234)
+        );
+        assert_eq!(furniture_catalog_id_from_item_data(0x1234, 1), None);
+    }
+
+    #[test]
+    #[ignore = "requires local game data"]
+    fn housing_interactable_lookup_uses_retail_prefixed_mannequin_and_dummy_rows() {
+        let original_dir = std::env::current_dir().unwrap();
+        let repo_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..");
+        std::env::set_current_dir(repo_root).unwrap();
+        let mut game_data = GameData::new();
+
+        let mannequin_interactable = game_data.is_housing_furniture_interactable(777, true);
+        let topiary_moogle_interactable = game_data.is_housing_furniture_interactable(94, false);
+        let riviera_dummy = game_data.get_housing_striking_dummy_npc_data(44);
+        let old_world_dummy = game_data.get_housing_striking_dummy_npc_data(120);
+        let thavnairian_dummy = game_data.get_housing_striking_dummy_npc_data(252);
+
+        std::env::set_current_dir(original_dir).unwrap();
+
+        assert!(mannequin_interactable);
+        assert!(!topiary_moogle_interactable);
+        assert_eq!(riviera_dummy.map(|dummy| dummy.base_id), Some(901));
+        assert_eq!(old_world_dummy.map(|dummy| dummy.base_id), Some(6133));
+        assert_eq!(thavnairian_dummy.map(|dummy| dummy.base_id), Some(13728));
+    }
+
+    #[test]
+    fn housing_renovation_contexts_cover_retail_7_51_rows() {
+        assert_eq!(HOUSING_RENOVATION_CONTEXTS.len(), 21);
+
+        let context = |row_id| {
+            HOUSING_RENOVATION_CONTEXTS
+                .iter()
+                .find(|context| context.row_id == row_id)
+                .copied()
+                .unwrap()
+        };
+
+        assert_eq!(context(2).territory_type_id, 283);
+        assert_eq!(context(2).category, 1);
+        assert_eq!(context(17).territory_type_id, 1250);
+        assert_eq!(context(17).category, 1);
+        assert_eq!(context(20).territory_type_id, 1375);
+        assert_eq!(context(20).category, 1);
+    }
+
+    #[test]
+    #[ignore = "requires local game data"]
+    fn housing_renovation_sheet_resolves_simple_interior_territories() {
+        let config = get_config();
+        let mut resource_resolver = ResourceResolver::new();
+        for path in config.filesystem.additional_search_paths {
+            resource_resolver.add_source(UnpackedResource::from_existing(&path));
+        }
+        let mut sqpack_resource = SqPackResourceSpy::from(
+            SqPackResource::from_existing(&config.filesystem.game_path),
+            &config.filesystem.unpack_path,
+        );
+        sqpack_resource.sqpack_resource.preload_index_files();
+        resource_resolver.add_source(sqpack_resource);
+
+        let Ok(housing_renovation_sheet) =
+            HousingRenovationSheet::read_from(&mut resource_resolver, Language::None)
+        else {
+            eprintln!("Unable to read HousingRenovation with the current Icarus/Physis reader");
+            return;
+        };
+        let Ok(housing_indoor_territory_sheet) =
+            HousingIndoorTerritorySheet::read_from(&mut resource_resolver, Language::None)
+        else {
+            eprintln!(
+                "Unable to read HousingIndoorTerritory with the current Icarus/Physis reader"
+            );
+            return;
+        };
+        let renovation_rows: Vec<_> = housing_renovation_sheet
+            .into_iter()
+            .flatten_subrows()
+            .collect();
+
+        for (territory_type_id, expected_category) in [(1249, 0), (1250, 1), (1251, 2)] {
+            let (row_id, row) = renovation_rows
+                .iter()
+                .find(|(_, row)| row.Territory == territory_type_id)
+                .expect("simple interior territory should have a HousingRenovation row");
+
+            assert_eq!(row.Territory, territory_type_id);
+            assert_eq!(
+                housing_indoor_territory_sheet
+                    .row(row.Territory as u32)
+                    .map(|row| row.Unknown0),
+                Some(expected_category),
+                "HousingRenovation row {row_id} should match the expected house-size category"
+            );
+        }
     }
 }
 
@@ -134,6 +276,10 @@ pub struct ItemRow {
     pub item_level: u16,
     /// The item's ClassJobCategory.
     pub classjob_category: u8,
+    /// Link into a category-specific sheet, such as housing appearance fixture rows.
+    pub additional_data: u32,
+    /// The item's UI category. Housing appearance fixtures use this to identify the fixture slot.
+    pub item_ui_category: u8,
 
     /// Stat modifier stuff
     pub base_param_ids: [u8; 6],
@@ -214,6 +360,156 @@ pub enum Roulette {
     CrystallineConflictCasual = 40,
     CrystallineConflictRanked = 41,
 }
+
+pub const HOUSING_STRIKING_DUMMY_BNPC_BASE_ID: u32 = 901;
+
+const HOUSING_FURNITURE_ROW_PREFIX: u32 = 0x0003_0000;
+const HOUSING_YARD_OBJECT_ROW_PREFIX: u32 = 0x0002_0000;
+const HOUSING_YARD_OBJECT_USAGE_STRIKING_DUMMY: u8 = 16;
+
+#[derive(Clone, Debug)]
+pub struct HousingStrikingDummyNpcData {
+    pub base_id: u32,
+    pub model_chara: u16,
+    pub battalion: u8,
+    pub customize: CustomizeData,
+    pub rank: u8,
+    pub equip: CommonSpawn,
+}
+
+fn housing_furniture_sheet_row_id(catalog_id: u16, indoors: bool) -> u32 {
+    let row_prefix = if indoors {
+        HOUSING_FURNITURE_ROW_PREFIX
+    } else {
+        HOUSING_YARD_OBJECT_ROW_PREFIX
+    };
+    row_prefix | catalog_id as u32
+}
+
+fn housing_furniture_usage_is_interactable(
+    usage_type: u8,
+    usage_parameter: u32,
+    custom_talk: u32,
+) -> bool {
+    usage_type != 0 || usage_parameter != 0 || custom_talk != 0
+}
+
+#[derive(Clone, Copy, Debug)]
+struct HousingRenovationContext {
+    row_id: u16,
+    territory_type_id: u16,
+    category: u8,
+}
+
+// Verified against the 7.51 HousingRenovation and HousingIndoorTerritory sheets.
+// The client still uses these row ids to populate AgentHousingInteriorPattern.
+const HOUSING_RENOVATION_CONTEXTS: [HousingRenovationContext; 21] = [
+    HousingRenovationContext {
+        row_id: 1,
+        territory_type_id: 282,
+        category: 0,
+    },
+    HousingRenovationContext {
+        row_id: 2,
+        territory_type_id: 283,
+        category: 1,
+    },
+    HousingRenovationContext {
+        row_id: 3,
+        territory_type_id: 284,
+        category: 2,
+    },
+    HousingRenovationContext {
+        row_id: 4,
+        territory_type_id: 342,
+        category: 0,
+    },
+    HousingRenovationContext {
+        row_id: 5,
+        territory_type_id: 343,
+        category: 1,
+    },
+    HousingRenovationContext {
+        row_id: 6,
+        territory_type_id: 344,
+        category: 2,
+    },
+    HousingRenovationContext {
+        row_id: 7,
+        territory_type_id: 345,
+        category: 0,
+    },
+    HousingRenovationContext {
+        row_id: 8,
+        territory_type_id: 346,
+        category: 1,
+    },
+    HousingRenovationContext {
+        row_id: 9,
+        territory_type_id: 347,
+        category: 2,
+    },
+    HousingRenovationContext {
+        row_id: 10,
+        territory_type_id: 649,
+        category: 0,
+    },
+    HousingRenovationContext {
+        row_id: 11,
+        territory_type_id: 650,
+        category: 1,
+    },
+    HousingRenovationContext {
+        row_id: 12,
+        territory_type_id: 651,
+        category: 2,
+    },
+    HousingRenovationContext {
+        row_id: 13,
+        territory_type_id: 980,
+        category: 0,
+    },
+    HousingRenovationContext {
+        row_id: 14,
+        territory_type_id: 981,
+        category: 1,
+    },
+    HousingRenovationContext {
+        row_id: 15,
+        territory_type_id: 982,
+        category: 2,
+    },
+    HousingRenovationContext {
+        row_id: 16,
+        territory_type_id: 1249,
+        category: 0,
+    },
+    HousingRenovationContext {
+        row_id: 17,
+        territory_type_id: 1250,
+        category: 1,
+    },
+    HousingRenovationContext {
+        row_id: 18,
+        territory_type_id: 1251,
+        category: 2,
+    },
+    HousingRenovationContext {
+        row_id: 19,
+        territory_type_id: 1374,
+        category: 0,
+    },
+    HousingRenovationContext {
+        row_id: 20,
+        territory_type_id: 1375,
+        category: 1,
+    },
+    HousingRenovationContext {
+        row_id: 21,
+        territory_type_id: 1376,
+        category: 2,
+    },
+];
 
 impl GameData {
     pub fn new() -> Self {
@@ -329,6 +625,15 @@ impl GameData {
         let ikd_route_sheet =
             IKDRouteSheet::read_from(&mut resource_resolver, config.world.language()).unwrap();
 
+        let housing_furniture_sheet =
+            HousingFurnitureSheet::read_from(&mut resource_resolver, Language::None).unwrap();
+
+        let housing_yard_object_sheet =
+            HousingYardObjectSheet::read_from(&mut resource_resolver, Language::None).unwrap();
+
+        let housing_training_doll_sheet =
+            HousingTrainingDollSheet::read_from(&mut resource_resolver, Language::None).unwrap();
+
         Self {
             resource: resource_resolver,
             item_sheet,
@@ -356,6 +661,9 @@ impl GameData {
             content_finder_condition_sheet,
             instance_content_sheet,
             ikd_route_sheet,
+            housing_furniture_sheet,
+            housing_yard_object_sheet,
+            housing_training_doll_sheet,
         }
     }
 
@@ -415,6 +723,8 @@ impl GameData {
                 stack_size: matched_row.StackSize,
                 item_level: matched_row.LevelItem,
                 classjob_category: matched_row.ClassJobCategory,
+                additional_data: matched_row.AdditionalData,
+                item_ui_category: matched_row.ItemUICategory,
                 base_param_ids: matched_row.BaseParam,
                 base_param_values: matched_row.BaseParamValue,
                 defense: matched_row.DefensePhys,
@@ -1528,23 +1838,123 @@ impl GameData {
         })
     }
 
-    /// Returns a piece of furniture's catalog id from its item id. In this context, "catalog id" means the low 12 bits of the furniture's row number on the HousingFurniture/HousingYardObject sheet, which is what we send to the client when placing furniture.
+    /// Returns a piece of furniture's catalog id from its item id. In this context, "catalog id"
+    /// means the 16-bit entry id of the furniture's HousingFurniture/HousingYardObject row, which
+    /// is what we send to the client when placing furniture.
     pub fn get_furniture_catalog_id(&mut self, item_id: u32) -> Option<u16> {
         // First, we need the item's AdditionalData column to point us to where we need to look on the HousingFurniture sheet.
         let row = self.item_sheet.row(item_id)?;
-        let item_ui_category = row.ItemUICategory;
+        furniture_catalog_id_from_item_data(row.AdditionalData, row.ItemUICategory)
+    }
 
-        // TODO: A better way to do this is checking if the link in AdditionalData leads to the HousingFurniture/HousingYardObject sheet or not.
-        // In order: Furnishing, Outdoor Furnishing, Table, Tabletop, Wall-mounted, Rug
-        let acceptable_ui_categories = [57, 76, 77, 78, 79, 80];
-        let next_row = row.AdditionalData;
-
-        // If the item is a piece of furniture, return the low 12 bits of the row number.
-        if acceptable_ui_categories.contains(&item_ui_category) && next_row != 0 {
-            return Some((next_row & 0x0FFF) as u16);
+    pub fn get_item_id_by_additional_data(
+        &mut self,
+        additional_data: u32,
+        item_ui_category: u8,
+    ) -> Option<u32> {
+        if additional_data == 0 {
+            return None;
         }
 
-        None
+        self.item_sheet
+            .into_iter()
+            .flatten_subrows()
+            .find_map(|(id, row)| {
+                (row.ItemUICategory == item_ui_category && row.AdditionalData == additional_data)
+                    .then_some(id)
+            })
+    }
+
+    pub fn is_housing_furniture_interactable(&mut self, catalog_id: u16, indoors: bool) -> bool {
+        let row_id = housing_furniture_sheet_row_id(catalog_id, indoors);
+
+        if indoors {
+            return self
+                .housing_furniture_sheet
+                .row(row_id)
+                .or_else(|| self.housing_furniture_sheet.row(catalog_id as u32))
+                .is_some_and(|row| {
+                    housing_furniture_usage_is_interactable(
+                        row.UsageType,
+                        row.UsageParameter,
+                        row.CustomTalk,
+                    )
+                });
+        }
+
+        self.housing_yard_object_sheet
+            .row(row_id)
+            .or_else(|| self.housing_yard_object_sheet.row(catalog_id as u32))
+            .is_some_and(|row| {
+                housing_furniture_usage_is_interactable(
+                    row.UsageType,
+                    row.UsageParameter,
+                    row.CustomTalk,
+                )
+            })
+    }
+
+    pub fn get_housing_striking_dummy_npc_data(
+        &mut self,
+        catalog_id: u16,
+    ) -> Option<HousingStrikingDummyNpcData> {
+        let base_id = self.housing_yard_object_striking_dummy_base_id(catalog_id)?;
+        let (model_chara, battalion, customize, rank, equip_id) = self.find_bnpc(base_id)?;
+        let equip = self.get_npc_equip(equip_id as u32).unwrap_or_default();
+
+        Some(HousingStrikingDummyNpcData {
+            base_id,
+            model_chara,
+            battalion,
+            customize,
+            rank,
+            equip,
+        })
+    }
+
+    fn housing_training_doll_base_id(&mut self, training_doll_id: u32) -> Option<u32> {
+        self.housing_training_doll_sheet
+            .row(training_doll_id)
+            .map(|row| row.Base)
+            .filter(|base_id| *base_id != 0)
+    }
+
+    fn housing_yard_object_striking_dummy_base_id(&mut self, catalog_id: u16) -> Option<u32> {
+        let row_id = housing_furniture_sheet_row_id(catalog_id, false);
+        let row = self
+            .housing_yard_object_sheet
+            .row(row_id)
+            .or_else(|| self.housing_yard_object_sheet.row(catalog_id as u32))?;
+        if row.UsageType != HOUSING_YARD_OBJECT_USAGE_STRIKING_DUMMY {
+            return None;
+        }
+
+        self.housing_training_doll_base_id(row.UsageParameter)
+            .or(Some(HOUSING_STRIKING_DUMMY_BNPC_BASE_ID))
+    }
+
+    pub fn get_housing_renovation_row_id_for_territory(
+        &mut self,
+        territory_type_id: u16,
+    ) -> Option<u16> {
+        HOUSING_RENOVATION_CONTEXTS
+            .iter()
+            .find(|context| context.territory_type_id == territory_type_id)
+            .map(|context| context.row_id)
+    }
+
+    pub fn get_housing_renovation_territory(&mut self, row_id: u16) -> Option<u16> {
+        HOUSING_RENOVATION_CONTEXTS
+            .iter()
+            .find(|context| context.row_id == row_id)
+            .map(|context| context.territory_type_id)
+    }
+
+    pub fn get_housing_indoor_territory_category(&mut self, territory_type_id: u16) -> Option<u8> {
+        HOUSING_RENOVATION_CONTEXTS
+            .iter()
+            .find(|context| context.territory_type_id == territory_type_id)
+            .map(|context| context.category)
     }
 
     /// Returns the damage element of this action.
@@ -1584,6 +1994,24 @@ impl GameData {
             .map(|x| x.0)
             .unwrap_or_default()
     }
+}
+
+fn furniture_catalog_id_from_item_data(additional_data: u32, item_ui_category: u8) -> Option<u16> {
+    if additional_data == 0 {
+        return None;
+    }
+
+    let linked_sheet = additional_data >> 16;
+    if matches!(linked_sheet, 0x0002 | 0x0003) {
+        return Some((additional_data & 0xFFFF) as u16);
+    }
+
+    // In order: Furnishing, Outdoor Furnishing, Table, Tabletop, Wall-mounted, Rug.
+    // Some older data paths expose the sheet row directly and need the UI category fallback.
+    let acceptable_ui_categories = [57, 76, 77, 78, 79, 80];
+    acceptable_ui_categories
+        .contains(&item_ui_category)
+        .then_some((additional_data & 0xFFFF) as u16)
 }
 
 impl mlua::UserData for GameData {

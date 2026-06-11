@@ -11,10 +11,13 @@ mod state;
 pub use state::{KawariLua, KawariLuaState};
 
 mod task;
-pub use task::LuaTask;
+pub use task::{
+    HousingEstateKind, HousingExteriorColorField, HousingExteriorField, HousingInteriorField,
+    HousingKit, HousingResetMode, LuaTask,
+};
 
 mod zone;
-pub use zone::LuaZone;
+pub use zone::{LuaZone, housing_placard_location_from_event_arg, talk_event_arg_for_actor};
 
 use kawari::{
     common::ObjectId,

@@ -111,6 +111,7 @@ pub fn execute_action(
         zone_data: LuaZone::default(),
         content_data: LuaContent::default(),
         base_parameters: BaseParameters::default(),
+        housing_ward_context: Default::default(),
     };
     // TODO: Isn't there a better way to do this without a bunch of borrow checking issues involving data, actor, and instance below?
     // Regardless, we need to set the player's mount id in their common spawn so both pillion works and also letting players see this existing actor's mount when they spawn.
@@ -647,6 +648,7 @@ pub fn execute_enemy_action(
         zone_data: LuaZone::default(),
         content_data: LuaContent::default(),
         base_parameters: BaseParameters::default(),
+        housing_ward_context: Default::default(),
     };
 
     let effects_builder;

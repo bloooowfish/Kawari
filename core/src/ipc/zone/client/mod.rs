@@ -17,6 +17,9 @@ pub use crate::ipc::zone::client::event_yield_handler::EventYieldHandler;
 mod item_operation;
 pub use crate::ipc::zone::client::item_operation::ItemOperation;
 
+mod housing_item_operation;
+pub use crate::ipc::zone::client::housing_item_operation::HousingItemOperation;
+
 mod event_return_handler;
 pub use crate::ipc::zone::client::event_return_handler::EventReturnHandler;
 
@@ -24,7 +27,7 @@ mod mail;
 pub use mail::{MailItemInfo, TakeAttachmentsInfo};
 
 mod queue_duties;
-pub use queue_duties::{DutyFinderSetting, QueueDuties};
+pub use queue_duties::{ContentRegistrationFlags, QueueDuties};
 
 use crate::ipc::zone::{
     CWLSPermissionRank, InviteReply, InviteType, LETTER_MSG_MAX_LENGTH, LinkshellInviteResponse,
@@ -136,6 +139,7 @@ pub enum ClientZoneIpcData {
         rotation: f32,
     },
     ItemOperation(ItemOperation),
+    HousingItemOperation(HousingItemOperation),
     StartTalkEvent {
         actor_id: ObjectTypeId,
         #[brw(pad_after = 4)] // padding

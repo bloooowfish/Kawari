@@ -88,6 +88,7 @@ registerGMCommand(GM_IMMEDIATELY_ACTION, GM_DIR.."ImmediatelyAction.lua")
 registerCommand("cf",                               DBG_DIR.."JoinContent.lua")
 registerCommand("classjob",                         DBG_DIR.."ClassJob.lua")
 registerCommand("festival",                         DBG_DIR.."Festival.lua")
+registerCommand("housing",                          GM_DIR.."Housing.lua")
 registerCommand("inspect",                          GM_DIR.."InspectPlayer.lua") -- TODO: remove this once we figure out the GMInspect IPC opcode
 registerCommand("itemlevel",                        DBG_DIR.."SetItemLevel.lua")
 registerCommand("monies",                           DBG_DIR.."Monies.lua")

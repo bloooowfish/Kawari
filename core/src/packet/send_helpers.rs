@@ -16,6 +16,15 @@ use super::{
     ReadWriteIpcSegment, SegmentData, SegmentType, compression::compress, parse_packet,
 };
 
+fn first_custom_ipc_response_segment(
+    segments: &[PacketSegment<CustomIpcSegment>],
+) -> Option<CustomIpcSegment> {
+    segments.iter().find_map(|segment| match &segment.data {
+        SegmentData::KawariIpc(data) => Some(data.clone()),
+        _ => None,
+    })
+}
+
 pub async fn send_packet<T: ReadWriteIpcSegment>(
     socket: &mut TcpStream,
     state: &mut ConnectionState,
@@ -77,7 +86,13 @@ pub async fn send_custom_world_packet(segment: CustomIpcSegment) -> Option<Custo
 
     let addr = config.world.get_public_socketaddr();
 
-    let mut stream = TcpStream::connect(addr).await.ok()?;
+    let mut stream = match TcpStream::connect(addr).await {
+        Ok(stream) => stream,
+        Err(err) => {
+            tracing::warn!("Failed to connect to custom world IPC at {addr}: {err}");
+            return None;
+        }
+    };
 
     let mut packet_state = ConnectionState::None;
 
@@ -98,15 +113,84 @@ pub async fn send_custom_world_packet(segment: CustomIpcSegment) -> Option<Custo
 
     // read response
     let mut buf = vec![0; RECEIVE_BUFFER_SIZE];
-    let n = stream.read(&mut buf).await.expect("Failed to read data!");
-    if n != 0 {
-        let segments = parse_packet::<CustomIpcSegment>(&buf[..n], &mut packet_state);
+    let n = match stream.read(&mut buf).await {
+        Ok(n) => n,
+        Err(err) => {
+            tracing::warn!("Failed to read custom world IPC response: {err}");
+            return None;
+        }
+    };
 
-        return match &segments[0].data {
-            SegmentData::KawariIpc(data) => Some(data.clone()),
-            _ => None,
-        };
+    if n == 0 {
+        tracing::warn!("Custom world IPC connection closed without a response.");
+        return None;
     }
 
-    None
+    let segments = parse_packet::<CustomIpcSegment>(&buf[..n], &mut packet_state);
+    if segments.is_empty() {
+        tracing::warn!("Failed to parse custom world IPC response.");
+        return None;
+    }
+
+    let response = first_custom_ipc_response_segment(&segments);
+    if response.is_none() {
+        tracing::warn!("Custom world IPC response did not contain a Kawari IPC segment.");
+    }
+
+    response
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::ipc::kawari::{CustomIpcData, CustomIpcSegment};
+    use crate::packet::{PacketSegment, SegmentData, SegmentType};
+
+    #[test]
+    fn first_custom_ipc_response_segment_returns_none_for_empty_segments() {
+        assert!(super::first_custom_ipc_response_segment(&[]).is_none());
+    }
+
+    #[test]
+    fn first_custom_ipc_response_segment_returns_first_custom_ipc_payload() {
+        let expected = CustomIpcSegment::new(CustomIpcData::RequestHousingSummary {});
+        let segments = vec![PacketSegment {
+            segment_type: SegmentType::KawariIpc,
+            data: SegmentData::KawariIpc(expected.clone()),
+            ..Default::default()
+        }];
+
+        let actual = super::first_custom_ipc_response_segment(&segments)
+            .expect("expected first custom IPC payload to be returned");
+        match actual.data {
+            CustomIpcData::RequestHousingSummary {} => {}
+            other => panic!("unexpected payload returned: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn first_custom_ipc_response_segment_skips_non_custom_segments() {
+        let expected = CustomIpcSegment::new(CustomIpcData::RequestHousingSummary {});
+        let segments = vec![
+            PacketSegment {
+                segment_type: SegmentType::KeepAliveResponse,
+                data: SegmentData::KeepAliveResponse {
+                    id: 7,
+                    timestamp: 11,
+                },
+                ..Default::default()
+            },
+            PacketSegment {
+                segment_type: SegmentType::KawariIpc,
+                data: SegmentData::KawariIpc(expected.clone()),
+                ..Default::default()
+            },
+        ];
+
+        let actual = super::first_custom_ipc_response_segment(&segments)
+            .expect("expected later custom IPC payload to be returned");
+        match actual.data {
+            CustomIpcData::RequestHousingSummary {} => {}
+            other => panic!("unexpected payload returned: {other:?}"),
+        }
+    }
 }

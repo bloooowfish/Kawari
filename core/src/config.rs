@@ -10,13 +10,17 @@ fn default_listen_address() -> String {
     "0.0.0.0".to_string()
 }
 
+fn default_admin_listen_address() -> String {
+    "127.0.0.1".to_string()
+}
+
 /// Configuration for the admin server.
 #[derive(Serialize, Deserialize)]
 pub struct AdminConfig {
     #[serde(default = "AdminConfig::default_port")]
     pub port: u16,
 
-    #[serde(default = "default_listen_address")]
+    #[serde(default = "default_admin_listen_address")]
     pub listen_address: String,
 }
 
@@ -24,7 +28,7 @@ impl Default for AdminConfig {
     fn default() -> Self {
         Self {
             port: Self::default_port(),
-            listen_address: default_listen_address(),
+            listen_address: default_admin_listen_address(),
         }
     }
 }
@@ -487,6 +491,16 @@ impl LauncherConfig {
 
     fn default_server_name() -> String {
         format!("http://launcher.ffxiv.localhost:{}", Self::default_port())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AdminConfig;
+
+    #[test]
+    fn admin_config_defaults_to_loopback() {
+        assert_eq!(AdminConfig::default().listen_address, "127.0.0.1");
     }
 }
 

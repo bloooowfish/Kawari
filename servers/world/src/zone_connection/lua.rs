@@ -1,10 +1,17 @@
 //! Translates tasks and handles other information from `LuaPlayer`.
 
+use super::housing::{
+    update_exterior_json_color, update_exterior_json_field, update_interior_json_field,
+};
 use crate::{
-    Event, ItemInfoQuery, ToServer, ZoneConnection,
+    Event, HousingEstate, HousingEstateSpec, ItemInfoQuery, MAX_APARTMENT_ROOM_NUMBER, ToServer,
+    WorldDatabase, ZoneConnection,
     event::EventHandler,
     inventory::{CrystalsStorage, CurrencyStorage, Item},
-    lua::{LuaPlayer, LuaTask},
+    lua::{
+        HousingEstateKind, HousingExteriorColorField, HousingExteriorField, HousingInteriorField,
+        HousingKit, HousingResetMode, LuaPlayer, LuaTask,
+    },
 };
 use kawari::{
     common::{
@@ -202,6 +209,11 @@ impl ZoneConnection {
                         );
                         self.send_ipc_self(ipc).await;
                     }
+
+                    {
+                        let mut database = self.database.lock();
+                        database.commit_classjob_and_inventory(&self.player_data);
+                    }
                 }
                 LuaTask::ModifyCrystal {
                     id,
@@ -229,6 +241,11 @@ impl ZoneConnection {
                         );
                         self.send_ipc_self(ipc).await;
                     }
+
+                    {
+                        let mut database = self.database.lock();
+                        database.commit_classjob_and_inventory(&self.player_data);
+                    }
                 }
                 LuaTask::GmSetOrchestrion { value, id } => {
                     self.gm_set_orchestrion(*value, *id);
@@ -255,6 +272,11 @@ impl ZoneConnection {
                             .add_in_next_free_slot(new_item)
                             .is_some()
                         {
+                            {
+                                let mut database = self.database.lock();
+                                database.commit_classjob_and_inventory(&self.player_data);
+                            }
+
                             if *send_client_update {
                                 self.send_inventory().await;
                             }
@@ -266,6 +288,373 @@ impl ZoneConnection {
                         tracing::error!(ERR_INVENTORY_ADD_FAILED);
                         self.send_notice(ERR_INVENTORY_ADD_FAILED).await;
                     }
+                }
+                LuaTask::ShowHousingPlacard {
+                    ward_index,
+                    division,
+                    plot_index,
+                } => {
+                    self.send_housing_placard_info(
+                        self.player_data.volatile.zone_id as u16,
+                        *ward_index,
+                        *division,
+                        *plot_index,
+                    )
+                    .await;
+                }
+                LuaTask::EnsureTestApartment { room_number } => {
+                    let Some(estate) = ({
+                        let context = self.apartment_ward_context_or_default();
+                        let mut database = self.database.lock();
+                        database.ensure_test_apartment(
+                            self.player_data.character.content_id as u64,
+                            &self.player_data.character.name,
+                            self.config.world_id,
+                            context.territory_type_id,
+                            context.ward_index,
+                            context.division,
+                            *room_number,
+                        )
+                    }) else {
+                        self.send_notice(&format!(
+                            "Apartment room numbers must be between 1 and {MAX_APARTMENT_ROOM_NUMBER}."
+                        ))
+                        .await;
+                        continue;
+                    };
+                    self.set_active_housing_ward_context_from_estate(&estate);
+                    self.send_notice(&format!(
+                        "Local apartment ready: room {} house_id=0x{:016X} land_ident={}",
+                        room_number, estate.house_id as u64, estate.land_ident
+                    ))
+                    .await;
+                    self.send_owned_housing().await;
+                }
+                LuaTask::EnsureTestHouse {} => {
+                    let (house_id, land_ident, estate_name) = {
+                        let mut database = self.database.lock();
+                        let estate = database.ensure_test_estate(
+                            self.player_data.character.content_id as u64,
+                            &self.player_data.character.name,
+                            self.config.world_id,
+                        );
+
+                        (
+                            estate.house_id as u64,
+                            estate.land_ident,
+                            estate.estate_name,
+                        )
+                    };
+
+                    self.send_notice(&format!(
+                        "Local housing estate ready: {estate_name} house_id=0x{house_id:016X} land_ident={land_ident}"
+                    ))
+                    .await;
+                    self.send_owned_housing().await;
+                }
+                LuaTask::EnsureTestHouseWithOptions {
+                    kind,
+                    size,
+                    territory_type_id,
+                    ward_index,
+                    division,
+                    plot_index,
+                } => {
+                    let (house_id, land_ident, estate_name, estate) = {
+                        let mut database = self.database.lock();
+                        let estate = database.ensure_test_estate_with_spec(HousingEstateSpec {
+                            owner_content_id: self.player_data.character.content_id as u64,
+                            owner_name: self.player_data.character.name.clone(),
+                            world_id: self.config.world_id,
+                            territory_type_id: *territory_type_id,
+                            ward_index: *ward_index,
+                            division: *division,
+                            plot_index: *plot_index,
+                            plot_size: *size,
+                            free_company: *kind == HousingEstateKind::FreeCompany,
+                        });
+
+                        (
+                            estate.house_id as u64,
+                            estate.land_ident,
+                            estate.estate_name.clone(),
+                            estate,
+                        )
+                    };
+                    self.set_active_housing_estate_from_row(&estate, false);
+
+                    self.send_notice(&format!(
+                        "Local housing estate ready: {estate_name} house_id=0x{house_id:016X} land_ident={land_ident}"
+                    ))
+                    .await;
+                    self.send_owned_housing().await;
+                }
+                LuaTask::ResetHousing { mode } => match mode {
+                    HousingResetMode::Furniture => {
+                        if let Some(estate) = self.current_or_owned_housing_estate() {
+                            let deleted = {
+                                let mut database = self.database.lock();
+                                database.delete_housing_furniture_for_estate(estate.land_ident)
+                            };
+                            self.clear_housing_furniture_reset_cache();
+                            self.send_notice(&format!(
+                                "Deleted {deleted} housing furniture rows for {}.",
+                                estate.estate_name
+                            ))
+                            .await;
+                        } else {
+                            self.send_notice("No local housing estate found to reset.")
+                                .await;
+                        }
+                    }
+                    HousingResetMode::Estate => {
+                        if let Some(estate) = self.current_or_owned_housing_estate() {
+                            let deleted = {
+                                let mut database = self.database.lock();
+                                database.delete_housing_estate_and_furniture(estate.land_ident)
+                            };
+                            if deleted {
+                                self.clear_housing_estate_reset_cache();
+                                self.send_notice(&format!(
+                                    "Deleted local housing estate {}.",
+                                    estate.estate_name
+                                ))
+                                .await;
+                                self.send_owned_housing().await;
+                            } else {
+                                self.send_notice("No local housing estate found to reset.")
+                                    .await;
+                            }
+                        } else {
+                            self.send_notice("No local housing estate found to reset.")
+                                .await;
+                        }
+                    }
+                    HousingResetMode::All => {
+                        let deleted = {
+                            let mut database = self.database.lock();
+                            let estates = database.owned_housing_estates(
+                                self.player_data.character.content_id as u64,
+                            );
+                            let count = estates.len();
+                            for estate in estates {
+                                database.delete_housing_estate_and_furniture(estate.land_ident);
+                            }
+                            count
+                        };
+                        self.clear_housing_estate_reset_cache();
+                        self.send_notice(&format!("Deleted {deleted} local housing estates."))
+                            .await;
+                        self.send_owned_housing().await;
+                    }
+                },
+                LuaTask::UpdateHousingName { name } => {
+                    if let Some(estate) = self.current_or_owned_housing_estate() {
+                        let updated = {
+                            let mut database = self.database.lock();
+                            database.update_housing_name(estate.land_ident, name)
+                        };
+                        if updated {
+                            self.send_notice(&format!("Housing estate name set to {name}."))
+                                .await;
+                        } else {
+                            self.send_notice("No local housing estate found to update.")
+                                .await;
+                        }
+                    } else {
+                        self.send_notice("No local housing estate found to update.")
+                            .await;
+                    }
+                }
+                LuaTask::UpdateHousingGreeting { greeting } => {
+                    if let Some(estate) = self.current_or_owned_housing_estate() {
+                        let updated = {
+                            let mut database = self.database.lock();
+                            database.update_housing_greeting(estate.land_ident, greeting)
+                        };
+                        if updated {
+                            self.send_notice("Housing estate greeting updated.").await;
+                        } else {
+                            self.send_notice("No local housing estate found to update.")
+                                .await;
+                        }
+                    } else {
+                        self.send_notice("No local housing estate found to update.")
+                            .await;
+                    }
+                }
+                LuaTask::UpdateHousingLight { level } => {
+                    if let Some(estate) = self.current_or_owned_housing_estate() {
+                        let level = (*level).min(5);
+                        let updated = {
+                            let mut database = self.database.lock();
+                            database.update_housing_light_level(estate.land_ident, level)
+                        };
+                        if updated {
+                            self.send_notice(&format!("Housing light level set to {level}."))
+                                .await;
+                        } else {
+                            self.send_notice("No local housing estate found to update.")
+                                .await;
+                        }
+                    } else {
+                        self.send_notice("No local housing estate found to update.")
+                            .await;
+                    }
+                }
+                LuaTask::UpdateHousingExterior { field, value } => {
+                    if let Some(estate) = self.current_or_owned_housing_estate() {
+                        let outcome = {
+                            let mut database = self.database.lock();
+                            apply_housing_exterior_fixture_update(
+                                &mut database,
+                                &estate,
+                                *field,
+                                *value,
+                            )
+                        };
+                        match outcome {
+                            HousingFixtureUpdateResult::Updated => {
+                                self.send_notice(
+                                    "Housing exterior updated. Re-enter the ward to refresh visuals.",
+                                )
+                                .await;
+                            }
+                            HousingFixtureUpdateResult::MissingEstate => {
+                                self.send_notice("No local housing estate found to update.")
+                                    .await;
+                            }
+                            HousingFixtureUpdateResult::InvalidStoredJson => {
+                                self.send_notice(
+                                    "Housing exterior update failed because the stored fixture JSON is invalid.",
+                                )
+                                .await;
+                            }
+                        }
+                    } else {
+                        self.send_notice("No local housing estate found to update.")
+                            .await;
+                    }
+                }
+                LuaTask::UpdateHousingExteriorColor { field, value } => {
+                    if let Some(estate) = self.current_or_owned_housing_estate() {
+                        let outcome = {
+                            let mut database = self.database.lock();
+                            apply_housing_exterior_color_update(
+                                &mut database,
+                                &estate,
+                                *field,
+                                *value,
+                            )
+                        };
+                        match outcome {
+                            HousingFixtureUpdateResult::Updated => {
+                                self.send_notice(
+                                    "Housing exterior color updated. Re-enter the ward to refresh visuals.",
+                                )
+                                .await;
+                            }
+                            HousingFixtureUpdateResult::MissingEstate => {
+                                self.send_notice("No local housing estate found to update.")
+                                    .await;
+                            }
+                            HousingFixtureUpdateResult::InvalidStoredJson => {
+                                self.send_notice(
+                                    "Housing exterior color update failed because the stored fixture JSON is invalid.",
+                                )
+                                .await;
+                            }
+                        }
+                    } else {
+                        self.send_notice("No local housing estate found to update.")
+                            .await;
+                    }
+                }
+                LuaTask::UpdateHousingInterior { field, value } => {
+                    if let Some(estate) = self.current_or_owned_housing_estate() {
+                        let outcome = {
+                            let mut database = self.database.lock();
+                            apply_housing_interior_fixture_update(
+                                &mut database,
+                                &estate,
+                                *field,
+                                *value,
+                            )
+                        };
+                        match outcome {
+                            HousingFixtureUpdateResult::Updated => {
+                                self.send_notice(
+                                    "Housing interior updated. Re-enter the estate to refresh fixtures.",
+                                )
+                                .await;
+                            }
+                            HousingFixtureUpdateResult::MissingEstate => {
+                                self.send_notice("No local housing estate found to update.")
+                                    .await;
+                            }
+                            HousingFixtureUpdateResult::InvalidStoredJson => {
+                                self.send_notice(
+                                    "Housing interior update failed because the stored fixture JSON is invalid.",
+                                )
+                                .await;
+                            }
+                        }
+                    } else {
+                        self.send_notice("No local housing estate found to update.")
+                            .await;
+                    }
+                }
+                LuaTask::GiveHousingKit { kit } => {
+                    let mut added = 0;
+                    let mut failed = 0;
+
+                    for item_id in housing_kit_items(*kit) {
+                        let new_item = {
+                            let mut game_data = self.gamedata.lock();
+                            game_data
+                                .get_item_info(ItemInfoQuery::ById(*item_id))
+                                .map(|info| Item::new(&info, 1))
+                        };
+
+                        if let Some(new_item) = new_item
+                            && self
+                                .player_data
+                                .inventory
+                                .add_in_next_free_slot(new_item)
+                                .is_some()
+                        {
+                            added += 1;
+                        } else {
+                            failed += 1;
+                        }
+                    }
+
+                    if added > 0 {
+                        {
+                            let mut database = self.database.lock();
+                            database.commit_classjob_and_inventory(&self.player_data);
+                        }
+                        self.send_inventory().await;
+                    }
+
+                    if failed == 0 {
+                        self.send_notice(&format!("Added {added} housing kit items."))
+                            .await;
+                    } else {
+                        self.send_notice(&format!(
+                            "Added {added} housing kit items; {failed} failed."
+                        ))
+                        .await;
+                    }
+                }
+                LuaTask::EnterTestApartment { room_number } => {
+                    self.enter_test_apartment(*room_number).await;
+                }
+                LuaTask::EnterTestHouse {} => {
+                    self.enter_test_house().await;
+                }
+                LuaTask::ExitTestHouse {} => {
+                    self.exit_test_house().await;
                 }
                 LuaTask::UnlockContent { id } => {
                     {
@@ -857,5 +1246,180 @@ impl ZoneConnection {
 
         // Then inform the server state to reload its own state as well
         self.handle.send(ToServer::ReloadScripts).await;
+    }
+
+    fn current_or_owned_housing_estate(&mut self) -> Option<HousingEstate> {
+        self.selected_or_owned_housing_estate()
+    }
+}
+
+fn housing_kit_items(kit: HousingKit) -> &'static [u32] {
+    match kit {
+        HousingKit::Indoor => &[6514, 6607, 6635, 6657, 6674, 6578, 7064],
+        HousingKit::Outdoor => &[6475, 6484, 6486, 6490, 7128, 7118, 12113],
+        HousingKit::Npc => &[7064, 23846, 9748, 9749],
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HousingFixtureUpdateResult {
+    Updated,
+    MissingEstate,
+    InvalidStoredJson,
+}
+
+fn apply_housing_exterior_fixture_update(
+    database: &mut WorldDatabase,
+    estate: &HousingEstate,
+    field: HousingExteriorField,
+    value: u16,
+) -> HousingFixtureUpdateResult {
+    match update_exterior_json_field(&estate.exterior_json, field, value) {
+        Ok(exterior_json) => {
+            if database.update_housing_exterior_json(estate.land_ident, &exterior_json) {
+                HousingFixtureUpdateResult::Updated
+            } else {
+                HousingFixtureUpdateResult::MissingEstate
+            }
+        }
+        Err(_) => HousingFixtureUpdateResult::InvalidStoredJson,
+    }
+}
+
+fn apply_housing_exterior_color_update(
+    database: &mut WorldDatabase,
+    estate: &HousingEstate,
+    field: HousingExteriorColorField,
+    value: u8,
+) -> HousingFixtureUpdateResult {
+    match update_exterior_json_color(&estate.exterior_json, field, value) {
+        Ok(exterior_json) => {
+            if database.update_housing_exterior_json(estate.land_ident, &exterior_json) {
+                HousingFixtureUpdateResult::Updated
+            } else {
+                HousingFixtureUpdateResult::MissingEstate
+            }
+        }
+        Err(_) => HousingFixtureUpdateResult::InvalidStoredJson,
+    }
+}
+
+fn apply_housing_interior_fixture_update(
+    database: &mut WorldDatabase,
+    estate: &HousingEstate,
+    field: HousingInteriorField,
+    value: u32,
+) -> HousingFixtureUpdateResult {
+    match update_interior_json_field(&estate.interior_json, field, value) {
+        Ok(interior_json) => {
+            if database.update_housing_interior_json(estate.land_ident, &interior_json) {
+                HousingFixtureUpdateResult::Updated
+            } else {
+                HousingFixtureUpdateResult::MissingEstate
+            }
+        }
+        Err(_) => HousingFixtureUpdateResult::InvalidStoredJson,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        HousingFixtureUpdateResult, apply_housing_exterior_color_update,
+        apply_housing_exterior_fixture_update, apply_housing_interior_fixture_update,
+    };
+    use crate::{
+        database::WorldDatabase,
+        lua::{HousingExteriorColorField, HousingExteriorField, HousingInteriorField, LuaTask},
+    };
+    use kawari::common::HouseId;
+
+    fn run_malformed_update_task(task: LuaTask, target_field_json: &str) {
+        let mut database = WorldDatabase::new_at(":memory:");
+        let estate = database.ensure_test_estate(100, "Tester", 67);
+        let before = database
+            .housing_estate_by_house_id(HouseId::from_u64(estate.house_id as u64))
+            .expect("ensured house should exist");
+        let expected_json = match &task {
+            LuaTask::UpdateHousingExterior { .. } | LuaTask::UpdateHousingExteriorColor { .. } => {
+                before.exterior_json.clone()
+            }
+            LuaTask::UpdateHousingInterior { .. } => before.interior_json.clone(),
+            _ => unreachable!(),
+        };
+        assert_ne!(
+            expected_json, target_field_json,
+            "seeded fixture should be malformed JSON"
+        );
+        let expected_before = target_field_json.to_string();
+
+        let malformed_seeded = match &task {
+            LuaTask::UpdateHousingExterior { .. } | LuaTask::UpdateHousingExteriorColor { .. } => {
+                database.update_housing_exterior_json(estate.land_ident, target_field_json)
+            }
+            LuaTask::UpdateHousingInterior { .. } => {
+                database.update_housing_interior_json(estate.land_ident, target_field_json)
+            }
+            _ => unreachable!(),
+        };
+        assert!(malformed_seeded);
+        let selected = database
+            .owned_housing_estates(100)
+            .into_iter()
+            .find(|estate| estate.owner_content_id == Some(100))
+            .expect("owned estate should still be available");
+        let outcome = match task {
+            LuaTask::UpdateHousingExterior { field, value } => {
+                apply_housing_exterior_fixture_update(&mut database, &selected, field, value)
+            }
+            LuaTask::UpdateHousingExteriorColor { field, value } => {
+                apply_housing_exterior_color_update(&mut database, &selected, field, value)
+            }
+            LuaTask::UpdateHousingInterior { field, value } => {
+                apply_housing_interior_fixture_update(&mut database, &selected, field, value)
+            }
+            _ => unreachable!(),
+        };
+        assert_eq!(outcome, HousingFixtureUpdateResult::InvalidStoredJson);
+
+        let updated_estate = database
+            .housing_estate_by_house_id(HouseId::from_u64(estate.house_id as u64))
+            .unwrap();
+        match task {
+            LuaTask::UpdateHousingExterior { .. } | LuaTask::UpdateHousingExteriorColor { .. } => {
+                assert_eq!(updated_estate.exterior_json, expected_before);
+            }
+            LuaTask::UpdateHousingInterior { .. } => {
+                assert_eq!(updated_estate.interior_json, expected_before);
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn update_housing_exterior_no_overwrite_when_json_is_malformed() {
+        let task = LuaTask::UpdateHousingExterior {
+            field: HousingExteriorField::Roof,
+            value: 9,
+        };
+        run_malformed_update_task(task, "{");
+    }
+
+    #[test]
+    fn update_housing_exterior_color_no_overwrite_when_json_is_malformed() {
+        let task = LuaTask::UpdateHousingExteriorColor {
+            field: HousingExteriorColorField::Roof,
+            value: 3,
+        };
+        run_malformed_update_task(task, "{");
+    }
+
+    #[test]
+    fn update_housing_interior_no_overwrite_when_json_is_malformed() {
+        let task = LuaTask::UpdateHousingInterior {
+            field: HousingInteriorField::WindowStyle,
+            value: 123,
+        };
+        run_malformed_update_task(task, "{");
     }
 }

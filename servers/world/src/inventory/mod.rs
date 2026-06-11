@@ -669,14 +669,14 @@ impl Default for HousingInventory {
                 GenericStorage::<MAX_LARGE_STORAGE>::new(ContainerType::HousingInteriorStoreroom8),
             ],
             interior_appearance: vec![GenericStorage::<MAX_LARGE_STORAGE>::new(
-                ContainerType::HousingExteriorAppearance,
+                ContainerType::HousingInteriorAppearance,
             )],
 
             exterior: vec![GenericStorage::<MAX_LARGE_STORAGE>::new(
                 ContainerType::HousingExteriorPlacedItems,
             )],
             exterior_storeroom: vec![GenericStorage::<MAX_LARGE_STORAGE>::new(
-                ContainerType::HousingExteriorPlacedItems,
+                ContainerType::HousingExteriorStoreroom,
             )],
             exterior_appearance: vec![GenericStorage::<MAX_LARGE_STORAGE>::new(
                 ContainerType::HousingExteriorAppearance,
@@ -772,8 +772,14 @@ impl HousingInventory {
             ContainerType::HousingInteriorStoreroom7 => Some(&mut self.interior_storeroom[6]),
             ContainerType::HousingInteriorStoreroom8 => Some(&mut self.interior_storeroom[7]),
 
-            ContainerType::HousingInteriorAppearance => Some(&mut self.interior_appearance[0]),
-            ContainerType::HousingExteriorAppearance => Some(&mut self.exterior_appearance[0]),
+            ContainerType::HousingInteriorAppearance
+            | ContainerType::HousingInteriorAppearanceEdit => {
+                Some(&mut self.interior_appearance[0])
+            }
+            ContainerType::HousingExteriorAppearance
+            | ContainerType::HousingExteriorAppearanceEdit => {
+                Some(&mut self.exterior_appearance[0])
+            }
 
             ContainerType::HousingExteriorPlacedItems => Some(&mut self.exterior[0]),
             ContainerType::HousingExteriorStoreroom => Some(&mut self.exterior_storeroom[0]),
@@ -801,8 +807,10 @@ impl HousingInventory {
             ContainerType::HousingInteriorStoreroom7 => Some(&self.interior_storeroom[6]),
             ContainerType::HousingInteriorStoreroom8 => Some(&self.interior_storeroom[7]),
 
-            ContainerType::HousingInteriorAppearance => Some(&self.interior_appearance[0]),
-            ContainerType::HousingExteriorAppearance => Some(&self.exterior_appearance[0]),
+            ContainerType::HousingInteriorAppearance
+            | ContainerType::HousingInteriorAppearanceEdit => Some(&self.interior_appearance[0]),
+            ContainerType::HousingExteriorAppearance
+            | ContainerType::HousingExteriorAppearanceEdit => Some(&self.exterior_appearance[0]),
 
             ContainerType::HousingExteriorPlacedItems => Some(&self.exterior[0]),
             ContainerType::HousingExteriorStoreroom => Some(&self.exterior_storeroom[0]),
@@ -833,11 +841,225 @@ impl HousingInventory {
 }
 
 /// Used to decide which set of housing inventory pages to send.
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum DesiredHousingInventoryPages {
     None,
     Exterior,
     ExteriorStoreroom,
     Interior,
     InteriorStoreroom,
+}
+
+pub fn indoor_container_for_flat_slot(slot: u16) -> Option<(ContainerType, u16)> {
+    let container_index = slot / MAX_LARGE_STORAGE as u16;
+    let container_slot = slot % MAX_LARGE_STORAGE as u16;
+
+    let container = match container_index {
+        0 => ContainerType::HousingInteriorPlacedItems1,
+        1 => ContainerType::HousingInteriorPlacedItems2,
+        2 => ContainerType::HousingInteriorPlacedItems3,
+        3 => ContainerType::HousingInteriorPlacedItems4,
+        4 => ContainerType::HousingInteriorPlacedItems5,
+        5 => ContainerType::HousingInteriorPlacedItems6,
+        6 => ContainerType::HousingInteriorPlacedItems7,
+        7 => ContainerType::HousingInteriorPlacedItems8,
+        _ => return None,
+    };
+
+    Some((container, container_slot))
+}
+
+pub fn flat_slot_for_container(container: ContainerType, slot: u16) -> Option<u16> {
+    if slot >= MAX_LARGE_STORAGE as u16 {
+        return None;
+    }
+
+    let page = match container {
+        ContainerType::HousingInteriorPlacedItems1 => 0,
+        ContainerType::HousingInteriorPlacedItems2 => 1,
+        ContainerType::HousingInteriorPlacedItems3 => 2,
+        ContainerType::HousingInteriorPlacedItems4 => 3,
+        ContainerType::HousingInteriorPlacedItems5 => 4,
+        ContainerType::HousingInteriorPlacedItems6 => 5,
+        ContainerType::HousingInteriorPlacedItems7 => 6,
+        ContainerType::HousingInteriorPlacedItems8 => 7,
+        ContainerType::HousingExteriorPlacedItems => 0,
+        _ => return None,
+    };
+
+    Some(page * MAX_LARGE_STORAGE as u16 + slot)
+}
+
+pub fn is_housing_placed_container(container: ContainerType) -> bool {
+    matches!(
+        container,
+        ContainerType::HousingExteriorPlacedItems
+            | ContainerType::HousingInteriorPlacedItems1
+            | ContainerType::HousingInteriorPlacedItems2
+            | ContainerType::HousingInteriorPlacedItems3
+            | ContainerType::HousingInteriorPlacedItems4
+            | ContainerType::HousingInteriorPlacedItems5
+            | ContainerType::HousingInteriorPlacedItems6
+            | ContainerType::HousingInteriorPlacedItems7
+            | ContainerType::HousingInteriorPlacedItems8
+    )
+}
+
+pub fn is_housing_storeroom_container(container: ContainerType) -> bool {
+    matches!(
+        container,
+        ContainerType::HousingExteriorStoreroom
+            | ContainerType::HousingInteriorStoreroom1
+            | ContainerType::HousingInteriorStoreroom2
+            | ContainerType::HousingInteriorStoreroom3
+            | ContainerType::HousingInteriorStoreroom4
+            | ContainerType::HousingInteriorStoreroom5
+            | ContainerType::HousingInteriorStoreroom6
+            | ContainerType::HousingInteriorStoreroom7
+            | ContainerType::HousingInteriorStoreroom8
+    )
+}
+
+#[cfg(test)]
+mod housing_inventory_tests {
+    use super::*;
+
+    #[test]
+    fn exterior_storeroom_uses_storeroom_container() {
+        let mut inventory = HousingInventory::default();
+        let item = Item {
+            quantity: 1,
+            item_id: 1,
+            ..Default::default()
+        };
+
+        let result = inventory
+            .add_in_empty_slot(item, DesiredHousingInventoryPages::ExteriorStoreroom)
+            .expect("exterior storeroom should have a free slot");
+
+        assert_eq!(result.container, ContainerType::HousingExteriorStoreroom);
+    }
+
+    #[test]
+    fn intended_use_selects_housing_pages() {
+        let inventory = HousingInventory::default();
+
+        assert_eq!(
+            inventory
+                .get_desired_pages_from_intendeduse(TerritoryIntendedUse::HousingOutdoor, false),
+            DesiredHousingInventoryPages::Exterior
+        );
+        assert_eq!(
+            inventory
+                .get_desired_pages_from_intendeduse(TerritoryIntendedUse::HousingOutdoor, true),
+            DesiredHousingInventoryPages::ExteriorStoreroom
+        );
+        assert_eq!(
+            inventory
+                .get_desired_pages_from_intendeduse(TerritoryIntendedUse::HousingIndoor, false),
+            DesiredHousingInventoryPages::Interior
+        );
+        assert_eq!(
+            inventory.get_desired_pages_from_intendeduse(TerritoryIntendedUse::HousingIndoor, true),
+            DesiredHousingInventoryPages::InteriorStoreroom
+        );
+    }
+
+    #[test]
+    fn default_appearance_containers_use_matching_housing_container_types() {
+        let inventory = HousingInventory::default();
+
+        assert_eq!(
+            inventory.interior_appearance[0].kind,
+            ContainerType::HousingInteriorAppearance
+        );
+        assert_eq!(
+            inventory.exterior_appearance[0].kind,
+            ContainerType::HousingExteriorAppearance
+        );
+    }
+
+    #[test]
+    fn edit_appearance_containers_alias_persisted_appearance_storage() {
+        let inventory = HousingInventory::default();
+
+        assert!(
+            inventory
+                .get_container(ContainerType::HousingInteriorAppearanceEdit)
+                .is_some()
+        );
+        assert!(
+            inventory
+                .get_container(ContainerType::HousingExteriorAppearanceEdit)
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn indoor_flat_slots_map_to_containers() {
+        assert_eq!(
+            indoor_container_for_flat_slot(0),
+            Some((ContainerType::HousingInteriorPlacedItems1, 0))
+        );
+        assert_eq!(
+            indoor_container_for_flat_slot(50),
+            Some((ContainerType::HousingInteriorPlacedItems2, 0))
+        );
+        assert_eq!(
+            indoor_container_for_flat_slot(399),
+            Some((ContainerType::HousingInteriorPlacedItems8, 49))
+        );
+        assert_eq!(indoor_container_for_flat_slot(400), None);
+    }
+
+    #[test]
+    fn containers_map_to_flat_slots() {
+        assert_eq!(
+            flat_slot_for_container(ContainerType::HousingInteriorPlacedItems1, 49),
+            Some(49)
+        );
+        assert_eq!(
+            flat_slot_for_container(ContainerType::HousingInteriorPlacedItems2, 0),
+            Some(50)
+        );
+        assert_eq!(
+            flat_slot_for_container(ContainerType::HousingInteriorPlacedItems8, 49),
+            Some(399)
+        );
+        assert_eq!(
+            flat_slot_for_container(ContainerType::HousingExteriorPlacedItems, 12),
+            Some(12)
+        );
+        assert_eq!(
+            flat_slot_for_container(ContainerType::HousingInteriorPlacedItems1, 50),
+            None
+        );
+        assert_eq!(
+            flat_slot_for_container(ContainerType::HousingInteriorStoreroom1, 0),
+            None
+        );
+    }
+
+    #[test]
+    fn housing_container_classification_is_explicit() {
+        assert!(is_housing_placed_container(
+            ContainerType::HousingInteriorPlacedItems1
+        ));
+        assert!(is_housing_placed_container(
+            ContainerType::HousingExteriorPlacedItems
+        ));
+        assert!(!is_housing_placed_container(
+            ContainerType::HousingInteriorStoreroom1
+        ));
+
+        assert!(is_housing_storeroom_container(
+            ContainerType::HousingInteriorStoreroom1
+        ));
+        assert!(is_housing_storeroom_container(
+            ContainerType::HousingExteriorStoreroom
+        ));
+        assert!(!is_housing_storeroom_container(
+            ContainerType::HousingExteriorPlacedItems
+        ));
+    }
 }

@@ -17,7 +17,7 @@ pub struct House {
 
 #[binrw]
 #[brw(repr = u8)]
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum HouseStatus {
     None = 0,
     #[default]

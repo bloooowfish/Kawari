@@ -16,13 +16,12 @@ use crate::{
     lua::{KawariLua, LuaTask},
 };
 use kawari::{
-    common::{HandlerId, ObjectId, Position, timestamp_secs},
+    common::{ContainerType, HandlerId, HouseId, ObjectId, Position, timestamp_secs},
     config::WorldConfig,
     ipc::zone::{
-        ApartmentList, ApartmentListEntry, CWLSMemberListEntry, ClientTriggerCommand,
-        ClientZoneIpcSegment, Condition, Conditions, DutyFinderSetting,
-        GrandCompany as IpcGrandCompany, LetterPreview, PlayerEntry, ServerZoneIpcData,
-        ServerZoneIpcSegment,
+        CWLSMemberListEntry, ClientTriggerCommand, ClientZoneIpcSegment, Condition, Conditions,
+        ContentRegistrationFlags, GrandCompany as IpcGrandCompany, LetterPreview, PlayerEntry,
+        ServerZoneIpcData, ServerZoneIpcSegment,
     },
     opcodes::ServerZoneIpcType,
     packet::{
@@ -35,7 +34,7 @@ use kawari::{
 use super::{
     WorldDatabase,
     common::{ClientId, ServerHandle},
-    inventory::{BuyBackList, HousingInventory, Inventory},
+    inventory::{BuyBackList, HousingInventory, Inventory, Item},
 };
 
 mod actor;
@@ -43,6 +42,7 @@ mod chat;
 mod effect;
 mod event;
 mod friends;
+mod housing;
 mod item;
 mod linkshell;
 mod lua;
@@ -119,6 +119,38 @@ pub struct ObsfucationData {
     pub seed3: u32,
 }
 
+#[derive(Debug, Default, Clone)]
+pub struct ActiveHousingEstate {
+    pub land_ident: i64,
+    pub house_id: HouseId,
+    pub indoors: bool,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct ActiveHousingWardContext {
+    pub territory_type_id: u16,
+    pub ward_index: u8,
+    pub division: u8,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct PendingHousingAppearanceItemOperation {
+    pub source_container: ContainerType,
+    pub source_slot: u16,
+    pub target_container: ContainerType,
+    pub target_slot: u16,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct AppliedHousingAppearanceItemOperation {
+    pub source_container: ContainerType,
+    pub source_slot: u16,
+    pub target_container: ContainerType,
+    pub target_slot: u16,
+    pub original_source_item: Item,
+    pub original_target_item: Item,
+}
+
 /// Represents a single connection between an instance of the client and the zone portion of the world server.
 pub struct ZoneConnection {
     pub config: WorldConfig,
@@ -150,11 +182,16 @@ pub struct ZoneConnection {
     /// Whether the player was gracefully logged out
     pub gracefully_logged_out: bool,
 
+    pub active_housing_estate: Option<ActiveHousingEstate>,
+    pub active_housing_ward_context: Option<ActiveHousingWardContext>,
+    pub display_housing_ward_context: Option<ActiveHousingWardContext>,
+    pub pending_housing_appearance_item_operation: Option<PendingHousingAppearanceItemOperation>,
+
     pub obsfucation_data: ObsfucationData,
 
     // TODO: support more than one content in the queue
     pub queued_content: Option<u16>,
-    pub content_settings: Option<DutyFinderSetting>,
+    pub content_settings: Option<ContentRegistrationFlags>,
     pub current_instance_id: Option<u16>,
 
     pub conditions: Conditions,
@@ -410,29 +447,6 @@ impl ZoneConnection {
 
             self.send_ipc_self(ipc).await;
         }
-    }
-
-    // TODO: break this out into its own housing file eventually
-    pub async fn send_apartment_list(&mut self, starting_index: u32) {
-        let mut apartments = vec![ApartmentListEntry::default(); ApartmentListEntry::COUNT];
-        apartments[0] = ApartmentListEntry {
-            resident_online_status_mask: self.get_online_status_mask(),
-            resident_zone_id: self.player_data.volatile.zone_id as u16,
-            resident_name: self.player_data.character.name.clone(),
-            apartment_description: "A test apartment provided to you by Kawari!".to_string(),
-            ..Default::default()
-        };
-
-        let ipc = ServerZoneIpcSegment::new(ServerZoneIpcData::ApartmentList(ApartmentList {
-            content_id: self.player_data.character.content_id as u64,
-            flags: 128,
-            ward_id: 0,
-            zone_id: self.player_data.volatile.zone_id as u16, // TODO: Apartment lists can be requested from apartments themselves, so this wouldn't make sense there!
-            world_id: self.config.world_id,
-            list_index: starting_index,
-            apartments,
-        }));
-        self.send_ipc_self(ipc).await;
     }
 
     pub async fn send_grand_company_info(&mut self) {

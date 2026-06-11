@@ -11,11 +11,17 @@ use diesel::sqlite::Sqlite;
 use kawari::constants::CLASSJOB_ARRAY_SIZE;
 use serde::{Deserialize, Serialize};
 pub use zone_connection::{
-    ObsfucationData, PlayerData, TeleportReason, ZoneConnection, spawn_allocator::SpawnAllocator,
+    ActiveHousingEstate, ObsfucationData, PlayerData, TeleportReason, ZoneConnection,
+    spawn_allocator::SpawnAllocator,
 };
 
 mod database;
-pub use database::{Content, Unlock, WorldDatabase};
+pub use database::{
+    Content, HousingEstate, HousingEstateSpec, HousingFurniture, MAX_APARTMENT_ROOM_NUMBER,
+    TEST_HOUSING_DIVISION, TEST_HOUSING_LAND_FLAGS, TEST_HOUSING_PLOT_INDEX,
+    TEST_HOUSING_PLOT_SIZE, TEST_HOUSING_TERRITORY_TYPE_ID, TEST_HOUSING_WARD_INDEX, Unlock,
+    WorldDatabase,
+};
 
 pub mod lua;
 
@@ -32,7 +38,10 @@ mod custom_ipc_connection;
 pub use custom_ipc_connection::CustomIpcConnection;
 
 mod common;
-pub use common::{ClientHandle, ClientId, FromServer, MessageInfo, ServerHandle, ToServer};
+pub use common::{
+    ClientHandle, ClientId, FromServer, HousingFurnitureObject, HousingFurnitureObjectKey,
+    MessageInfo, ServerHandle, ToServer,
+};
 
 mod navmesh;
 pub use navmesh::{Navmesh, NavmeshParams, NavmeshTile};

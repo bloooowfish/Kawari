@@ -29,8 +29,11 @@ pub struct HousingInteriorDetails {
     /// This interior's door style.
     pub door_style: u16,
     /// This interior door's dye colour. Index into the Stain Excel sheet.
+    /// IDA suggests the low byte is the door stain and the high byte may overlap the client-side light transition level.
+    /// Keep the existing u16 layout until runtime packet traces prove a safer split.
     pub door_stain: u16,
-    /// The light level in the interior. Note that this is actually described in terms of a level of *darkness*. When the client sets the UI light level to 5, the client will send value 0 in the ClientTrigger. Other examples: light level 1 will send 4, light level 2 will send 3, and so on.
+    /// The client-side current/active light byte for the interior. The adjacent high byte of `door_stain` is the likely
+    /// darkness transition level according to IDA; this field is kept as-is for compatibility with current persistence.
     pub light_level: u8,
     pub unk2: [u8; 3], // likely just padding
     /// The ground floor's wall style. In an apartment, this along with ground_floor and ground_chandelier dictate what will decorate the apartment, leaving doors, windows, top floor and cellar all zeroes/blank.

@@ -1,12 +1,18 @@
 mod character;
 mod friends;
+mod housing;
+pub use housing::{
+    HousingEstateSpec, MAX_APARTMENT_ROOM_NUMBER, TEST_HOUSING_DIVISION, TEST_HOUSING_LAND_FLAGS,
+    TEST_HOUSING_PLOT_INDEX, TEST_HOUSING_PLOT_SIZE, TEST_HOUSING_TERRITORY_TYPE_ID,
+    TEST_HOUSING_WARD_INDEX,
+};
 mod linkshell;
 mod mail;
 
 mod models;
 pub use models::{
     AetherCurrent, Aetheryte, Character, ClassJob, Companion, Content, Friends, GrandCompany,
-    Mentor, Quest, SearchInfo, Unlock, Volatile,
+    HousingEstate, HousingFurniture, Mentor, Quest, SearchInfo, Unlock, Volatile,
 };
 
 mod schema;
@@ -30,8 +36,12 @@ impl Default for WorldDatabase {
 
 impl WorldDatabase {
     pub fn new() -> Self {
+        Self::new_at("world.db")
+    }
+
+    pub fn new_at(database_url: &str) -> Self {
         let mut connection =
-            SqliteConnection::establish("world.db").expect("Failed to open database!");
+            SqliteConnection::establish(database_url).expect("Failed to open database!");
 
         connection.run_pending_migrations(MIGRATIONS).unwrap();
 

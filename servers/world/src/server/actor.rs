@@ -12,6 +12,8 @@ use kawari::{
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum NpcState {
+    /// Stays in place and never acquires a combat/movement target.
+    Stationary,
     /// Wanders in random directions.
     Wander,
     /// Follows its owner NPC.

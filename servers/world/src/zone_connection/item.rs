@@ -12,6 +12,7 @@ use kawari::{
     },
 };
 
+use physis::TerritoryIntendedUse;
 use physis::equipment::EquipSlot;
 use strum::IntoEnumIterator;
 
@@ -91,6 +92,38 @@ impl ZoneConnection {
                 return;
             }
         };
+
+        for container in cloned_inv.into_iter() {
+            self.send_container(&container, container.kind).await;
+        }
+    }
+
+    pub async fn send_housing_appearance_inventory(&mut self, intended_use: TerritoryIntendedUse) {
+        let cloned_inv = match intended_use {
+            TerritoryIntendedUse::HousingIndoor => {
+                self.player_data.house_inventory.interior_appearance.clone()
+            }
+            TerritoryIntendedUse::HousingOutdoor => {
+                self.player_data.house_inventory.exterior_appearance.clone()
+            }
+            _ => {
+                return;
+            }
+        };
+
+        for container in &cloned_inv {
+            let num_items = (0..container.max_slots())
+                .filter(|slot_index| !container.get_slot(*slot_index as u16).is_empty_slot())
+                .count();
+            tracing::info!(
+                content_id = self.player_data.character.content_id,
+                intended_use = intended_use as u8,
+                container = ?container.kind,
+                max_slots = container.max_slots(),
+                num_items,
+                "Sending housing appearance container"
+            );
+        }
 
         for container in cloned_inv.into_iter() {
             self.send_container(&container, container.kind).await;

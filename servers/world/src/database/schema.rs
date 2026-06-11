@@ -230,6 +230,49 @@ diesel::table! {
 
 diesel::joinable!(grand_company -> character (content_id));
 
+diesel::table! {
+    housing_estates (land_ident) {
+        land_ident -> BigInt,
+        house_id -> BigInt,
+        territory_type_id -> Integer,
+        world_id -> Integer,
+        ward_index -> Integer,
+        division -> Integer,
+        plot_index -> Integer,
+        room_number -> Integer,
+        is_apartment -> Bool,
+        owner_content_id -> Nullable<BigInt>,
+        owner_name -> Text,
+        plot_size -> Integer,
+        flags -> Integer,
+        estate_name -> Text,
+        greeting -> Text,
+        exterior_json -> Text,
+        interior_json -> Text,
+        light_level -> Integer,
+        created_at -> BigInt,
+        updated_at -> BigInt,
+    }
+}
+
+diesel::table! {
+    housing_furniture (land_ident, container_type, slot) {
+        land_ident -> BigInt,
+        container_type -> Integer,
+        slot -> Integer,
+        item_id -> BigInt,
+        catalog_id -> Integer,
+        stain -> Integer,
+        placed -> Bool,
+        pos_x -> Float,
+        pos_y -> Float,
+        pos_z -> Float,
+        rotation -> Float,
+        created_by_content_id -> Nullable<BigInt>,
+        updated_at -> BigInt,
+    }
+}
+
 diesel::allow_tables_to_appear_in_same_query!(
     character,
     classjob,
@@ -245,4 +288,6 @@ diesel::allow_tables_to_appear_in_same_query!(
     mentor,
     search_info,
     grand_company,
+    housing_estates,
+    housing_furniture,
 );

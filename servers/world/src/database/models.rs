@@ -15,6 +15,7 @@ use kawari::{
     },
     ipc::zone::{GameMasterRank, OnlineStatus, SocialListUILanguages},
 };
+use serde::{Deserialize, Serialize};
 
 use crate::{
     ActiveQuests, Bitmask, CharaMake, ClassExperience, ClassLevels, FavoriteAetherytes,
@@ -409,4 +410,73 @@ pub struct GrandCompany {
     pub content_id: i64,
     pub active_company: kawari::ipc::zone::GrandCompany,
     pub company_ranks: GrandCompanyRanks,
+}
+
+#[derive(
+    Insertable,
+    Identifiable,
+    Queryable,
+    Selectable,
+    AsChangeset,
+    Debug,
+    Default,
+    Clone,
+    Serialize,
+    Deserialize,
+)]
+#[diesel(table_name = super::schema::housing_estates)]
+#[diesel(check_for_backend(diesel::sqlite::Sqlite))]
+#[diesel(primary_key(land_ident))]
+pub struct HousingEstate {
+    pub land_ident: i64,
+    pub house_id: i64,
+    pub territory_type_id: i32,
+    pub world_id: i32,
+    pub ward_index: i32,
+    pub division: i32,
+    pub plot_index: i32,
+    pub room_number: i32,
+    pub is_apartment: bool,
+    pub owner_content_id: Option<i64>,
+    pub owner_name: String,
+    pub plot_size: i32,
+    pub flags: i32,
+    pub estate_name: String,
+    pub greeting: String,
+    pub exterior_json: String,
+    pub interior_json: String,
+    pub light_level: i32,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(
+    Insertable,
+    Identifiable,
+    Queryable,
+    Selectable,
+    AsChangeset,
+    Debug,
+    Default,
+    Clone,
+    Serialize,
+    Deserialize,
+)]
+#[diesel(table_name = super::schema::housing_furniture)]
+#[diesel(check_for_backend(diesel::sqlite::Sqlite))]
+#[diesel(primary_key(land_ident, container_type, slot))]
+pub struct HousingFurniture {
+    pub land_ident: i64,
+    pub container_type: i32,
+    pub slot: i32,
+    pub item_id: i64,
+    pub catalog_id: i32,
+    pub stain: i32,
+    pub placed: bool,
+    pub pos_x: f32,
+    pub pos_y: f32,
+    pub pos_z: f32,
+    pub rotation: f32,
+    pub created_by_content_id: Option<i64>,
+    pub updated_at: i64,
 }

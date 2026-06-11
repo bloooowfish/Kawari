@@ -10,16 +10,16 @@ use kawari::common::{
     calculate_max_level,
 };
 use kawari::config::{FilesystemConfig, get_config};
-use kawari_world::inventory::{Item, MAX_LARGE_STORAGE, Storage, get_next_free_slot};
+use kawari_world::inventory::{Item, Storage, get_next_free_slot};
 use physis::{TerritoryIntendedUse, equipment::EquipSlot};
 
 use kawari::ipc::chat::ClientChatIpcData;
 
 use kawari::ipc::zone::{
     ActorControlCategory, CWLSLeaveReason, Conditions, ContentFinderUserAction, CrossRealmListing,
-    CrossRealmListings, EventType, FurnitureTranslatedForObserver, ItemInfo,
-    LinkshellInviteResponse, MarketBoardItem, OnlineStatus, OnlineStatusMask, PlayerSetup,
-    SceneFlags, SearchInfo, SocialListRequestType, TrustContent, TrustInformation, WarpType,
+    CrossRealmListings, EventType, FurnitureTranslatedForObserver, LinkshellInviteResponse,
+    MarketBoardItem, OnlineStatus, OnlineStatusMask, PlayerSetup, SceneFlags, SearchInfo,
+    SocialListRequestType, TrustContent, TrustInformation, WarpType,
 };
 
 use kawari::ipc::zone::{
@@ -30,15 +30,18 @@ use kawari::ipc::zone::{
 use kawari::common::{CharacterMode, NETWORK_TIMEOUT, RECEIVE_BUFFER_SIZE};
 use kawari::constants::{AETHER_CURRENT_COMP_FLG_SET_BITMASK_SIZE, CLASSJOB_ARRAY_SIZE};
 use kawari::packet::oodle::OodleNetwork;
-use kawari::packet::{ConnectionState, ConnectionType, SegmentData, parse_packet_header};
-use kawari_world::lua::{KawariLua, KawariLuaState, LuaPlayer};
+use kawari::packet::{
+    ConnectionState, ConnectionType, PacketHeader, SegmentData, parse_packet_header,
+};
+use kawari_world::lua::{KawariLua, KawariLuaState, LuaPlayer, talk_event_arg_for_actor};
 use kawari_world::{
     ChatConnection, CustomIpcConnection, Event, EventHandler, GameData, ObsfucationData, Roulette,
     TeleportReason, ZoneConnection,
 };
 use kawari_world::{
-    ChatConnectionChannels, ChatPlayerData, ClientHandle, ClientId, FromServer, MessageInfo,
-    PlayerData, ServerHandle, ToServer, WorldDatabase, server_main_loop,
+    ChatConnectionChannels, ChatPlayerData, ClientHandle, ClientId, FromServer,
+    HousingFurnitureObject, MessageInfo, PlayerData, ServerHandle, ToServer, WorldDatabase,
+    server_main_loop,
 };
 
 use mlua::Function;
@@ -51,6 +54,82 @@ use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
 use kawari::common::INVENTORY_ACTION_ACK_GENERAL;
+
+fn drain_complete_client_packets(pending: &mut Vec<u8>) -> Vec<Vec<u8>> {
+    let header_size = std::mem::size_of::<PacketHeader>();
+    let mut packets = Vec::new();
+
+    while pending.len() >= header_size {
+        let header = parse_packet_header(&pending[..header_size]);
+        let packet_size = header.size as usize;
+
+        if !(header_size..=RECEIVE_BUFFER_SIZE).contains(&packet_size) {
+            tracing::warn!(
+                pending_bytes = pending.len(),
+                packet_size,
+                "Discarding buffered client bytes with invalid packet size"
+            );
+            pending.clear();
+            break;
+        }
+
+        if pending.len() < packet_size {
+            break;
+        }
+
+        if pending.len() > packet_size {
+            tracing::debug!(
+                pending_bytes = pending.len(),
+                packet_size,
+                "Processing coalesced client packet"
+            );
+        }
+
+        packets.push(pending[..packet_size].to_vec());
+        pending.drain(..packet_size);
+    }
+
+    packets
+}
+
+#[cfg(test)]
+mod packet_stream_tests {
+    use super::*;
+
+    fn packet_bytes(payload_len: usize, fill: u8) -> Vec<u8> {
+        let header_size = std::mem::size_of::<PacketHeader>();
+        let packet_size = header_size + payload_len;
+        let mut bytes = vec![fill; packet_size];
+        bytes[..header_size].fill(0);
+        bytes[24..28].copy_from_slice(&(packet_size as u32).to_le_bytes());
+        bytes
+    }
+
+    #[test]
+    fn drains_multiple_complete_packets_from_one_read_buffer() {
+        let first = packet_bytes(2, 0x11);
+        let second = packet_bytes(3, 0x22);
+        let mut pending = [first.clone(), second.clone()].concat();
+
+        let packets = drain_complete_client_packets(&mut pending);
+
+        assert_eq!(packets, vec![first, second]);
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn leaves_partial_packet_buffered_until_more_bytes_arrive() {
+        let complete = packet_bytes(2, 0x11);
+        let partial = packet_bytes(4, 0x22);
+        let partial_prefix = partial[..partial.len() - 1].to_vec();
+        let mut pending = [complete.clone(), partial_prefix.clone()].concat();
+
+        let packets = drain_complete_client_packets(&mut pending);
+
+        assert_eq!(packets, vec![complete]);
+        assert_eq!(pending, partial_prefix);
+    }
+}
 
 fn spawn_main_loop(
     game_data: Arc<Mutex<GameData>>,
@@ -150,6 +229,10 @@ async fn initial_setup(
                     gamedata: game_data.clone(),
                     last_keep_alive: Instant::now(),
                     gracefully_logged_out: false,
+                    active_housing_estate: None,
+                    active_housing_ward_context: None,
+                    display_housing_ward_context: None,
+                    pending_housing_appearance_item_operation: None,
                     obsfucation_data: ObsfucationData::default(),
                     queued_content: None,
                     conditions: Conditions::default(),
@@ -366,6 +449,7 @@ async fn client_chat_loop(
         .await;
 
     let mut buf = vec![0; RECEIVE_BUFFER_SIZE];
+    let mut pending_client_bytes = Vec::with_capacity(RECEIVE_BUFFER_SIZE);
     loop {
         tokio::select! {
             biased; // client data should always be prioritized
@@ -382,40 +466,43 @@ async fn client_chat_loop(
                             }
                         } else {
                             connection.last_keep_alive = Instant::now();
-                            let segments = connection.parse_packet(&buf);
-                            for segment in segments {
-                                match &segment.data {
-                                    SegmentData::None() => {}
-                                    SegmentData::Setup { .. } => {
-                                        // Handled before our connection was spawned!
-                                    }
-                                    SegmentData::Ipc(data) => {
-                                        match &data.data {
-                                            ClientChatIpcData::SendTellMessage(tell_data) => {
-                                                connection.send_tell_message(tell_data).await;
-                                            }
-                                            ClientChatIpcData::SendPartyMessage(data) => {
-                                                connection.send_party_message(data).await;
-                                            }
-                                            ClientChatIpcData::GetChannelList { unk } => {
-                                                tracing::info!("GetChannelList: {:#?} from {}", unk, connection.player_data.actor_id);
-                                            }
-                                            ClientChatIpcData::SendCWLinkshellMessage(data) => {
-                                                connection.send_linkshell_message(data).await;
-                                            }
-                                            ClientChatIpcData::SendAllianceMessage(_data) => {
-                                                tracing::info!("Chatting in alliances is unimplemented");
-                                            }
-                                            ClientChatIpcData::Unknown { unk } => {
-                                                tracing::warn!("Unknown Chat packet {:?} recieved ({} bytes), this should be handled!", data.header.op_code, unk.len());
+                            pending_client_bytes.extend_from_slice(&buf[..n]);
+                            for packet in drain_complete_client_packets(&mut pending_client_bytes) {
+                                let segments = connection.parse_packet(&packet);
+                                for segment in segments {
+                                    match &segment.data {
+                                        SegmentData::None() => {}
+                                        SegmentData::Setup { .. } => {
+                                            // Handled before our connection was spawned!
+                                        }
+                                        SegmentData::Ipc(data) => {
+                                            match &data.data {
+                                                ClientChatIpcData::SendTellMessage(tell_data) => {
+                                                    connection.send_tell_message(tell_data).await;
+                                                }
+                                                ClientChatIpcData::SendPartyMessage(data) => {
+                                                    connection.send_party_message(data).await;
+                                                }
+                                                ClientChatIpcData::GetChannelList { unk } => {
+                                                    tracing::info!("GetChannelList: {:#?} from {}", unk, connection.player_data.actor_id);
+                                                }
+                                                ClientChatIpcData::SendCWLinkshellMessage(data) => {
+                                                    connection.send_linkshell_message(data).await;
+                                                }
+                                                ClientChatIpcData::SendAllianceMessage(_data) => {
+                                                    tracing::info!("Chatting in alliances is unimplemented");
+                                                }
+                                                ClientChatIpcData::Unknown { unk } => {
+                                                    tracing::warn!("Unknown Chat packet {:?} recieved ({} bytes), this should be handled!", data.header.op_code, unk.len());
+                                                }
                                             }
                                         }
+                                        SegmentData::KeepAliveRequest { id, timestamp } => connection.send_keep_alive(*id, *timestamp).await,
+                                        SegmentData::KeepAliveResponse { .. } => {
+                                            // these should be safe to ignore
+                                        }
+                                        _ => panic!("ChatConnection: The server is receiving a response or an unknown packet: {segment:#?}"),
                                     }
-                                    SegmentData::KeepAliveRequest { id, timestamp } => connection.send_keep_alive(*id, *timestamp).await,
-                                    SegmentData::KeepAliveResponse { .. } => {
-                                        // these should be safe to ignore
-                                    }
-                                    _ => panic!("ChatConnection: The server is receiving a response or an unknown packet: {segment:#?}"),
                                 }
                             }
                         }
@@ -536,6 +623,7 @@ async fn process_packet(
         }
     } else {
         connection.last_keep_alive = Instant::now();
+        lua_player.housing_ward_context = connection.display_housing_ward_context_or_default();
 
         let segments = connection.parse_packet(&buf[..n]);
         for segment in &segments {
@@ -950,6 +1038,18 @@ async fn process_packet(
                             connection.send_stats().await;
                         }
                         ClientZoneIpcData::ClientTrigger(trigger) => {
+                            let trace_intended_use = connection.get_zone_intended_use();
+                            if connection.in_housing_area(trace_intended_use) {
+                                tracing::info!(
+                                    content_id = connection.player_data.character.content_id,
+                                    zone_id = connection.player_data.volatile.zone_id,
+                                    intended_use = trace_intended_use as u8,
+                                    trigger = ?&trigger.trigger,
+                                    target = ?trigger.target,
+                                    "Housing zone client trigger"
+                                );
+                            }
+
                             match trigger.trigger {
                                 ClientTriggerCommand::RequestTitleList {} => {
                                     let ipc =
@@ -1465,10 +1565,307 @@ async fn process_packet(
                                 ClientTriggerCommand::RequestApartmentList { starting_index } => {
                                     connection.send_apartment_list(starting_index).await;
                                 }
-                                ClientTriggerCommand::SetInteriorLightLevel { level, unk } => {
-                                    // TODO: Also reject if they're not the owner/shared tenant
+                                ClientTriggerCommand::RequestHousingWardInfo {
+                                    zone_id,
+                                    ward_index,
+                                } => {
+                                    let zone_id = zone_id.min(u16::MAX as u32) as u16;
+                                    let ward_index = ward_index.min(u8::MAX as u32) as u8;
+                                    let intended_use = {
+                                        let mut gamedata = connection.gamedata.lock();
+                                        gamedata
+                                            .get_intended_use(zone_id as u32)
+                                            .unwrap_or(TerritoryIntendedUse::Jail)
+                                    };
+                                    if !connection.in_housing_area(intended_use) {
+                                        tracing::warn!(
+                                            content_id =
+                                                connection.player_data.character.content_id,
+                                            zone_id,
+                                            ward_index,
+                                            intended_use = intended_use as u8,
+                                            "Rejecting RequestHousingWardInfo for non-housing territory"
+                                        );
+                                        continue;
+                                    }
+
+                                    connection.send_housing_ward_info(zone_id, ward_index).await;
+                                }
+                                ClientTriggerCommand::RequestEstateExteriorRemodel {
+                                    plot_index,
+                                } => {
+                                    let intended_use = connection.get_zone_intended_use();
+                                    let active_estate = if intended_use
+                                        == TerritoryIntendedUse::HousingOutdoor
+                                    {
+                                        connection.active_housing_estate_for_outdoor_owner_gate()
+                                    } else {
+                                        None
+                                    };
+                                    let Some(active_estate) = active_estate else {
+                                        tracing::warn!(
+                                            content_id =
+                                                connection.player_data.character.content_id,
+                                            plot_index,
+                                            intended_use = intended_use as u8,
+                                            "Rejecting exterior remodel request"
+                                        );
+                                        continue;
+                                    };
+                                    let authoritative_plot_index =
+                                        active_estate.house_id.unit.apartment_division_plot_index;
+
+                                    tracing::info!(
+                                        content_id = connection.player_data.character.content_id,
+                                        plot_index,
+                                        authoritative_plot_index,
+                                        "Client requested exterior remodeling window"
+                                    );
+
+                                    connection.reload_active_housing_inventory(intended_use);
+                                    connection
+                                        .send_housing_appearance_inventory(intended_use)
+                                        .await;
+                                    connection.conditions.set_condition(
+                                        kawari::ipc::zone::Condition::UsingHousingFunctions,
+                                    );
+                                    connection.send_conditions().await;
+                                    connection
+                                        .actor_control_self(
+                                            ActorControlCategory::ShowEstateExternalAppearanceUI {
+                                                plot_index: authoritative_plot_index as u32,
+                                            },
+                                        )
+                                        .await;
+                                }
+                                ClientTriggerCommand::RequestEstateInteriorRemodel {} => {
+                                    let intended_use = connection.get_zone_intended_use();
+                                    let can_edit =
+                                        connection.can_edit_active_housing_estate(intended_use);
+                                    if intended_use != TerritoryIntendedUse::HousingIndoor
+                                        || !can_edit
+                                    {
+                                        tracing::warn!(
+                                            content_id =
+                                                connection.player_data.character.content_id,
+                                            intended_use = intended_use as u8,
+                                            can_edit,
+                                            "Rejecting interior remodel request"
+                                        );
+                                        continue;
+                                    }
+
+                                    tracing::info!(
+                                        content_id = connection.player_data.character.content_id,
+                                        "Client requested interior remodeling window"
+                                    );
+
+                                    connection.reload_active_housing_inventory(intended_use);
+                                    connection
+                                        .send_housing_appearance_inventory(intended_use)
+                                        .await;
+                                    connection.conditions.set_condition(
+                                        kawari::ipc::zone::Condition::UsingHousingFunctions,
+                                    );
+                                    connection.send_conditions().await;
+                                    connection
+                                        .actor_control_self(
+                                            ActorControlCategory::ShowEstateInternalAppearanceUI {},
+                                        )
+                                        .await;
+                                }
+                                ClientTriggerCommand::InteriorRemodelMenuToggled {} => {
+                                    let intended_use = connection.get_zone_intended_use();
+                                    tracing::debug!(
+                                        content_id = connection.player_data.character.content_id,
+                                        intended_use = intended_use as u8,
+                                        "Client primed interior remodeling flow"
+                                    );
+                                }
+                                ClientTriggerCommand::RequestEstateInteriorPattern { mode } => {
+                                    let intended_use = connection.get_zone_intended_use();
+                                    let can_edit = connection
+                                        .can_use_active_housing_interior_pattern(intended_use);
+                                    if !can_edit {
+                                        tracing::warn!(
+                                            content_id =
+                                                connection.player_data.character.content_id,
+                                            intended_use = intended_use as u8,
+                                            can_edit,
+                                            mode,
+                                            "Rejecting interior design pattern request"
+                                        );
+                                        continue;
+                                    }
+
+                                    let Some((renovation_row_id, current_size)) = connection
+                                        .current_housing_interior_pattern_context(intended_use)
+                                    else {
+                                        continue;
+                                    };
+
+                                    tracing::info!(
+                                        content_id = connection.player_data.character.content_id,
+                                        mode,
+                                        renovation_row_id,
+                                        current_size,
+                                        "Client requested interior design pattern window"
+                                    );
+
+                                    connection.conditions.set_condition(
+                                        kawari::ipc::zone::Condition::UsingHousingFunctions,
+                                    );
+                                    connection.send_conditions().await;
+                                    connection
+                                        .actor_control_self(
+                                            ActorControlCategory::ShowEstateInteriorPatternUI {
+                                                enabled: true,
+                                                current_renovation_row_id: renovation_row_id as u32,
+                                                current_size: current_size as u32,
+                                                remodel_mode: 0,
+                                                allowed_size_mask: 0,
+                                            },
+                                        )
+                                        .await;
+                                }
+                                ClientTriggerCommand::ApplyEstateInteriorPattern {
+                                    mode,
+                                    renovation_row_id,
+                                } => {
+                                    let intended_use = connection.get_zone_intended_use();
+                                    let can_edit = connection
+                                        .can_use_active_housing_interior_pattern(intended_use);
+                                    if !can_edit {
+                                        tracing::warn!(
+                                            content_id =
+                                                connection.player_data.character.content_id,
+                                            intended_use = intended_use as u8,
+                                            can_edit,
+                                            mode,
+                                            renovation_row_id,
+                                            "Rejecting interior design pattern apply"
+                                        );
+                                        continue;
+                                    }
+
+                                    let Some(territory_type_id) = connection
+                                        .apply_housing_interior_pattern(
+                                            intended_use,
+                                            renovation_row_id,
+                                        )
+                                    else {
+                                        continue;
+                                    };
+
+                                    connection
+                                        .actor_control_self(
+                                            ActorControlCategory::FinishEstateInteriorPattern {
+                                                enabled: true,
+                                            },
+                                        )
+                                        .await;
+                                    connection.conditions.remove_condition(
+                                        kawari::ipc::zone::Condition::UsingHousingFunctions,
+                                    );
+                                    connection.send_conditions().await;
+                                    if connection
+                                        .should_reload_after_housing_interior_pattern_apply(
+                                            intended_use,
+                                        )
+                                    {
+                                        connection
+                                            .reload_housing_interior_pattern_territory(
+                                                territory_type_id,
+                                            )
+                                            .await;
+                                    }
+                                }
+                                ClientTriggerCommand::RequestEstateInteriorPatternStatus {
+                                    mode,
+                                    unk1,
+                                } => {
+                                    let intended_use = connection.get_zone_intended_use();
+                                    tracing::debug!(
+                                        content_id = connection.player_data.character.content_id,
+                                        intended_use = intended_use as u8,
+                                        mode,
+                                        unk1,
+                                        "Client requested interior design pattern status"
+                                    );
+                                }
+                                ClientTriggerCommand::FinishEstateRemodel { mode } => {
                                     let intended_use = connection.get_zone_intended_use();
                                     if !connection.in_housing_area(intended_use) {
+                                        continue;
+                                    }
+
+                                    let apply = match mode {
+                                        0 => true,
+                                        255 => false,
+                                        _ => {
+                                            tracing::warn!(
+                                                content_id =
+                                                    connection.player_data.character.content_id,
+                                                mode,
+                                                intended_use = intended_use as u8,
+                                                "Rejecting unknown housing appearance remodel finish mode"
+                                            );
+                                            continue;
+                                        }
+                                    };
+                                    let applied_appearance_operation = if apply {
+                                        connection.apply_pending_housing_appearance_item_operation(
+                                            intended_use,
+                                        )
+                                    } else {
+                                        connection
+                                            .clear_pending_housing_appearance_item_operation();
+                                        None
+                                    };
+
+                                    if !connection
+                                        .persist_housing_appearance_remodel(apply, intended_use)
+                                    {
+                                        if let Some(operation) = applied_appearance_operation {
+                                            connection.rollback_housing_appearance_item_operation(
+                                                operation,
+                                            );
+                                        }
+                                        continue;
+                                    }
+
+                                    if applied_appearance_operation.is_some() {
+                                        let mut database = connection.database.lock();
+                                        database
+                                            .commit_classjob_and_inventory(&connection.player_data);
+                                    }
+
+                                    connection
+                                        .actor_control_self(
+                                            ActorControlCategory::FinishEstateAppearanceRemodel {},
+                                        )
+                                        .await;
+                                    connection.conditions.remove_condition(
+                                        kawari::ipc::zone::Condition::UsingHousingFunctions,
+                                    );
+                                    connection.send_conditions().await;
+
+                                    if let Some(operation) = applied_appearance_operation {
+                                        connection
+                                            .send_housing_appearance_item_operation_update(
+                                                operation,
+                                                intended_use,
+                                            )
+                                            .await;
+                                    }
+                                }
+                                ClientTriggerCommand::SetInteriorLightLevel { level, unk } => {
+                                    let intended_use = connection.get_zone_intended_use();
+                                    if !connection.in_housing_area(intended_use) {
+                                        continue;
+                                    }
+                                    if !connection.persist_housing_light_level(level, intended_use)
+                                    {
                                         continue;
                                     }
 
@@ -1492,9 +1889,10 @@ async fn process_packet(
                                         .await;
                                 }
                                 ClientTriggerCommand::FurnitureMenuToggled { closed } => {
-                                    // TODO: Also reject if they're not the owner/shared tenant
                                     let intended_use = connection.get_zone_intended_use();
-                                    if !connection.in_housing_area(intended_use) {
+                                    if !connection.in_housing_area(intended_use)
+                                        || !connection.can_edit_active_housing_estate(intended_use)
+                                    {
                                         continue;
                                     }
 
@@ -1516,11 +1914,21 @@ async fn process_packet(
                                     connection.send_conditions().await;
                                 }
                                 ClientTriggerCommand::RequestHousingInventory { storeroom } => {
-                                    // TODO: Also reject if they're not the owner/shared tenant
                                     let intended_use = connection.get_zone_intended_use();
-                                    if !connection.in_housing_area(intended_use) {
+                                    if !connection.in_housing_area(intended_use)
+                                        || !connection.can_edit_active_housing_estate(intended_use)
+                                    {
                                         continue;
                                     }
+
+                                    tracing::debug!(
+                                        content_id = connection.player_data.character.content_id,
+                                        intended_use = intended_use as u8,
+                                        storeroom,
+                                        "Client requested housing inventory"
+                                    );
+
+                                    connection.reload_active_housing_inventory(intended_use);
 
                                     let desired_pages = connection
                                         .player_data
@@ -1532,6 +1940,14 @@ async fn process_packet(
 
                                     connection.send_housing_inventory(desired_pages).await;
                                 }
+                                ClientTriggerCommand::HousingMoveToFrontDoor {} => {
+                                    let intended_use = connection.get_zone_intended_use();
+                                    if !connection.in_housing_area(intended_use) {
+                                        continue;
+                                    }
+
+                                    connection.move_to_housing_front_door().await;
+                                }
                                 ClientTriggerCommand::MoveHousingItemToInventory {
                                     to_storeroom,
                                     storage_id,
@@ -1539,72 +1955,29 @@ async fn process_packet(
                                     ..
                                 } => {
                                     let intended_use = connection.get_zone_intended_use();
-                                    // TODO: Also reject if they're not the owner/shared tenant
                                     if !connection.in_housing_area(intended_use) {
                                         continue;
                                     }
 
-                                    tracing::info!(
-                                        "Client is moving housing item to inventory! {:#?} {:#?} {:#?}",
+                                    tracing::debug!(
+                                        content_id = connection.player_data.character.content_id,
                                         to_storeroom,
-                                        storage_id,
-                                        slot
+                                        ?storage_id,
+                                        slot,
+                                        "Client requested housing item move"
                                     );
 
-                                    let desired_pages = connection
-                                        .player_data
-                                        .house_inventory
-                                        .get_desired_pages_from_intendeduse(
-                                            intended_use,
+                                    let Some(item_move) = connection
+                                        .persist_housing_item_move_to_inventory(
                                             to_storeroom,
-                                        );
-
-                                    let Some(transfer_item) = connection
-                                        .player_data
-                                        .house_inventory
-                                        .get_item(storage_id, slot)
+                                            storage_id,
+                                            slot,
+                                            intended_use,
+                                        )
+                                        .await
                                     else {
                                         continue;
                                     };
-
-                                    let item_info = if !to_storeroom {
-                                        connection
-                                            .player_data
-                                            .inventory
-                                            .add_in_next_free_slot(transfer_item)
-                                    } else {
-                                        connection
-                                            .player_data
-                                            .house_inventory
-                                            .add_in_empty_slot(transfer_item, desired_pages)
-                                    };
-
-                                    let Some(item_info) = item_info else {
-                                        continue;
-                                    };
-
-                                    // Have to get this before deleting the item...
-                                    let item_id = transfer_item.item_id;
-
-                                    // This is a bit ugly, but we have to do this after that `if` to avoid borrowing the house inventory twice...
-                                    let transfer_item = connection
-                                        .player_data
-                                        .house_inventory
-                                        .get_item_mut(storage_id, slot)
-                                        .unwrap(); // This unwrap should be fine since the check was performed above.
-
-                                    *transfer_item = Item::default();
-
-                                    // Next, update the client's inventory.
-                                    let src_container_type = storage_id;
-                                    let dst_container_type = item_info.container;
-
-                                    connection
-                                        .send_affected_containers(
-                                            src_container_type,
-                                            dst_container_type,
-                                        )
-                                        .await;
 
                                     // Inform the player via a log message where their item went.
                                     connection
@@ -1614,21 +1987,32 @@ async fn process_packet(
                                             } else {
                                                 LogMessageType::FurnitureMovedToInventory as u32
                                             },
-                                            id: item_id,
+                                            id: item_move.item_id,
                                         })
                                         .await;
 
-                                    // TODO: This probably needs to be networked only if the source furniture was placed in the world, and this is not a transfer from the storeroom to the player's inventory
-                                    connection
-                                        .broadcast_actor_control(
-                                            ActorControlCategory::FurnitureRemovedToInventoryAck {
-                                                unk1: slot as u32,
-                                                unk2: 0,
-                                                unk3: 0,
-                                                unk4: 0,
-                                            },
-                                        )
-                                        .await;
+                                    if item_move.removed_from_world {
+                                        connection
+                                            .broadcast_actor_control(
+                                                ActorControlCategory::FurnitureRemovedToInventoryAck {
+                                                    unk1: item_move.ack_slot as u32,
+                                                    unk2: 0,
+                                                    unk3: 0,
+                                                    unk4: 0,
+                                                },
+                                            )
+                                            .await;
+
+                                        if let Some(object_key) = item_move.object_key {
+                                            connection
+                                                .handle
+                                                .send(ToServer::RemoveHousingFurnitureObject(
+                                                    connection.player_data.character.actor_id,
+                                                    object_key,
+                                                ))
+                                                .await;
+                                        }
+                                    }
                                 }
                                 ClientTriggerCommand::PlaceFurnitureFromStoreroom {
                                     container_type,
@@ -1636,12 +2020,22 @@ async fn process_packet(
                                     ..
                                 } => {
                                     let intended_use = connection.get_zone_intended_use();
-                                    // TODO: Also reject if they're not the owner/shared tenant
-                                    if !connection.in_housing_area(intended_use) {
+                                    if !connection.in_housing_area(intended_use)
+                                        || !connection.can_edit_active_housing_estate(intended_use)
+                                    {
                                         continue;
                                     }
 
+                                    tracing::debug!(
+                                        content_id = connection.player_data.character.content_id,
+                                        ?container_type,
+                                        container_index,
+                                        intended_use = intended_use as u8,
+                                        "Client requested furniture preview from storeroom"
+                                    );
+
                                     let catalog_id;
+                                    let stain;
                                     {
                                         let mut gamedata = connection.gamedata.lock();
                                         let Some(the_item) = connection
@@ -1658,13 +2052,12 @@ async fn process_packet(
                                         };
 
                                         catalog_id = the_id;
+                                        stain = the_item.stains[0];
                                     }
 
                                     // This acts as a preview, and we don't actually spawn the furniture until the client sends a PlaceFurniture. Therefore, we don't network this.
                                     let indoors =
                                         intended_use == TerritoryIntendedUse::HousingIndoor;
-                                    // TODO: implement dyes...
-                                    let stain = 0;
 
                                     if indoors {
                                         connection
@@ -1741,6 +2134,32 @@ async fn process_packet(
                                             },
                                         ))
                                         .await;
+                                }
+                                ClientTriggerCommand::Unknown { category: 830, .. } => {
+                                    let intended_use = connection.get_zone_intended_use();
+                                    if connection.in_housing_area(intended_use) {
+                                        connection
+                                            .actor_control_self(
+                                                ActorControlCategory::MapMarkerUpdateBegin {
+                                                    flags: 0,
+                                                },
+                                            )
+                                            .await;
+                                        connection
+                                            .actor_control_self(
+                                                ActorControlCategory::MapMarkerUpdateEnd {},
+                                            )
+                                            .await;
+                                    } else {
+                                        connection
+                                            .handle
+                                            .send(ToServer::ClientTrigger(
+                                                connection.id,
+                                                connection.player_data.character.actor_id,
+                                                trigger.clone(),
+                                            ))
+                                            .await;
+                                    }
                                 }
                                 _ => {
                                     // inform the server of our trigger, it will handle sending it to other clients
@@ -2035,7 +2454,19 @@ async fn process_packet(
                                 )
                                 .await;
 
+                            let intended_use = connection.get_zone_intended_use();
+                            if connection
+                                .process_housing_appearance_item_operation(action, intended_use)
+                                .await
+                            {
+                                continue;
+                            }
+
                             connection.player_data.inventory.process_action(action);
+                            {
+                                let mut database = connection.database.lock();
+                                database.commit_classjob_and_inventory(&connection.player_data);
+                            }
 
                             if action.operation_type == ItemOperationKind::Discard {
                                 tracing::info!("Client is discarding from their inventory!");
@@ -2146,12 +2577,14 @@ async fn process_packet(
                             actor_id,
                             handler_id,
                         } => {
+                            let event_arg =
+                                talk_event_arg_for_actor(&lua_player.zone_data, *actor_id);
                             if connection
                                 .start_event(
                                     *actor_id,
                                     handler_id.0,
                                     EventType::Talk,
-                                    0,
+                                    event_arg,
                                     events,
                                     lua_player,
                                 )
@@ -2288,6 +2721,18 @@ async fn process_packet(
                                 ))
                                 .await;
                         }
+                        ClientZoneIpcData::HousingItemOperation(action) => {
+                            tracing::info!(
+                                "Client is staging housing appearance item operation! {action:#?}"
+                            );
+                            let intended_use = connection.get_zone_intended_use();
+                            if connection.record_housing_appearance_item_operation_marker(
+                                action,
+                                intended_use,
+                            ) {
+                                continue;
+                            }
+                        }
                         ClientZoneIpcData::StandardControlsPivot { .. } => {
                             /* No-op because we already seem to handle this, other nearby clients can see the sending player
                              * pivoting anyway. */
@@ -2299,9 +2744,9 @@ async fn process_packet(
                             connection.send_ipc_self(ipc).await;
                         }
                         ClientZoneIpcData::QueueDuties(queue_duties) => {
-                            connection.content_settings = Some(queue_duties.settings);
+                            connection.content_settings = Some(queue_duties.flags);
                             lua_player.content_data.settings =
-                                DutyOption::from_content_flags(queue_duties.settings).bits(); // TODO: is this the best place to update this?
+                                DutyOption::from_content_flags(queue_duties.flags).bits(); // TODO: is this the best place to update this?
                             connection
                                 .register_for_content(queue_duties.content_ids)
                                 .await;
@@ -3334,7 +3779,6 @@ async fn process_packet(
                         } => {
                             let intended_use = connection.get_zone_intended_use();
 
-                            // TODO: Also reject if they're not the owner/shared tenant
                             if !connection.in_housing_area(intended_use) {
                                 tracing::error!(
                                     "The player attempted to place furniture while not within a housing zone! Rejecting request!"
@@ -3342,117 +3786,53 @@ async fn process_packet(
                                 continue;
                             }
 
-                            tracing::info!(
-                                "Client placed furniture! {:#?} {:#?} {:#?} {:#?} {:#?}",
-                                container,
+                            tracing::debug!(
+                                content_id = connection.player_data.character.content_id,
+                                ?container,
                                 slot,
-                                position,
+                                position_x = position.0.x,
+                                position_y = position.0.y,
+                                position_z = position.0.z,
                                 rotation,
                                 spawn_furniture,
+                                "Client placed furniture"
                             );
 
-                            let transfer_item = if let Some(the_item) =
-                                connection.player_data.inventory.get_item(*container, *slot)
-                            {
-                                the_item
-                            } else if let Some(the_item) = connection
-                                .player_data
-                                .house_inventory
-                                .get_item(*container, *slot)
-                            {
-                                the_item
-                            } else {
-                                tracing::error!(
-                                    "The client attempted to use an invalid container to place a furniture item! Rejecting request!"
-                                );
-                                continue;
-                            };
-
-                            let catalog_id;
-                            {
-                                let mut gamedata = connection.gamedata.lock();
-                                let result =
-                                    gamedata.get_furniture_catalog_id(transfer_item.item_id);
-                                catalog_id = result.unwrap_or_default();
-                            }
-
-                            let desired_pages = connection
-                                .player_data
-                                .house_inventory
-                                .get_desired_pages_from_intendeduse(intended_use, !spawn_furniture);
-
-                            let Some(result) = connection
-                                .player_data
-                                .house_inventory
-                                .add_in_empty_slot(transfer_item, desired_pages)
+                            let Some(placement) = connection
+                                .persist_furniture_placement(
+                                    *container,
+                                    *slot,
+                                    *position,
+                                    *rotation,
+                                    *spawn_furniture,
+                                    *plot_index,
+                                    intended_use,
+                                )
+                                .await
                             else {
-                                tracing::error!(
-                                    "Unable to add item to this housing inventory, it's full!"
-                                );
                                 continue;
                             };
-
-                            // Next, remove the item from the player's main inventory or the storeroom.
-                            {
-                                let old_slot = if let Some(the_item) = connection
-                                    .player_data
-                                    .inventory
-                                    .get_item_mut(*container, *slot)
-                                {
-                                    the_item
-                                } else if let Some(the_item) = connection
-                                    .player_data
-                                    .house_inventory
-                                    .get_item_mut(*container, *slot)
-                                {
-                                    the_item
-                                } else {
-                                    continue; // This shouldn't even be reachable or possible but it's not overly desirable to crash intentionally, so we'll just skip over it.
-                                };
-
-                                *old_slot = Item::default();
-
-                                let ipc = ServerZoneIpcSegment::new(
-                                    ServerZoneIpcData::UpdateInventorySlot(ItemInfo {
-                                        sequence: 0,
-                                        container: *container,
-                                        slot: *slot,
-                                        ..(Item::default()).into()
-                                    }),
-                                );
-                                connection.send_ipc_self(ipc).await;
-                            }
-
-                            // Next, update the client's inventory.
-                            let src_container_type = container;
-                            let dst_container_type = result.container;
-                            connection
-                                .send_affected_containers(*src_container_type, dst_container_type)
-                                .await;
 
                             // If the client opted to move furniture to the storeroom, there's nothing further to do here.
-                            if !spawn_furniture {
+                            if !placement.spawned {
                                 continue;
                             }
-
-                            // Finally, acknowledge the placement.
-                            // TODO: We need to store the coordinates when things are persistent
-                            let indoors = intended_use == TerritoryIntendedUse::HousingIndoor;
-                            // TODO: implement dyes...
-                            let stain = 0;
 
                             connection
                                 .handle
                                 .send(ToServer::PlaceFurniture(
                                     connection.player_data.character.actor_id,
-                                    result.container,
-                                    result.slot,
-                                    catalog_id,
-                                    stain,
-                                    *position,
-                                    indoors,
-                                    *rotation,
-                                    *plot_index,
+                                    HousingFurnitureObject {
+                                        slot: placement.object_slot,
+                                        catalog_id: placement.catalog_id,
+                                        position: placement.position,
+                                        rotation: placement.rotation,
+                                        indoors: placement.indoors,
+                                        plot_index: placement.plot_index,
+                                    },
+                                    placement.container,
+                                    placement.slot,
+                                    placement.stain,
                                 ))
                                 .await;
 
@@ -3476,7 +3856,6 @@ async fn process_packet(
                         } => {
                             let intended_use = connection.get_zone_intended_use();
 
-                            // TODO: Also reject if they're not the owner/shared tenant
                             if !connection.in_housing_area(intended_use) {
                                 tracing::warn!(
                                     "Client attempted to move furniture when not in a housing area! Rejecting request!"
@@ -3484,82 +3863,45 @@ async fn process_packet(
                                 continue;
                             }
 
-                            tracing::info!(
-                                "Client moved furniture! {:#?} {:#?}, {:#?}, {:#?} {:#?} {:#?}",
-                                house_id,
+                            tracing::debug!(
+                                content_id = connection.player_data.character.content_id,
+                                house_id = house_id.to_u64(),
                                 slot,
-                                position,
+                                position_x = position.0.x,
+                                position_y = position.0.y,
+                                position_z = position.0.z,
                                 rotation,
                                 unk2,
-                                unk3
+                                unk3,
+                                "Client translated furniture"
                             );
 
-                            // TODO: We need to store the new coordinates and rotation when making everything persistent!
-                            let indoors = intended_use == TerritoryIntendedUse::HousingIndoor;
-
-                            // Determine which container the moved item belongs to.
-                            // TODO: This will need to be expanded in 7.5
-                            let storage_id;
-                            if indoors {
-                                if *slot < 50 {
-                                    storage_id = ContainerType::HousingInteriorPlacedItems1;
-                                } else if *slot < 100 {
-                                    storage_id = ContainerType::HousingInteriorPlacedItems2;
-                                } else if *slot < 150 {
-                                    storage_id = ContainerType::HousingInteriorPlacedItems3;
-                                } else if *slot < 200 {
-                                    storage_id = ContainerType::HousingInteriorPlacedItems4;
-                                } else if *slot < 250 {
-                                    storage_id = ContainerType::HousingInteriorPlacedItems5;
-                                } else if *slot < 300 {
-                                    storage_id = ContainerType::HousingInteriorPlacedItems6;
-                                } else if *slot < 350 {
-                                    storage_id = ContainerType::HousingInteriorPlacedItems7;
-                                } else if *slot < 400 {
-                                    storage_id = ContainerType::HousingInteriorPlacedItems8;
-                                } else {
-                                    tracing::warn!(
-                                        "Client tried to move furniture beyond the bounds of current housing limits! Rejecting request!"
-                                    );
-                                    continue;
-                                }
-                            } else {
-                                if *slot < 50 {
-                                    storage_id = ContainerType::HousingExteriorPlacedItems;
-                                } else {
-                                    tracing::warn!(
-                                        "Client tried to move furniture beyond the bounds of current housing limits! Rejecting request!"
-                                    );
-                                    continue;
-                                }
+                            let Some(translation) = connection.persist_furniture_translation(
+                                *house_id,
+                                *slot,
+                                *position,
+                                *rotation,
+                                intended_use,
+                            ) else {
+                                continue;
                             };
 
                             connection
                                 .handle
                                 .send(ToServer::TranslateFurniture(
                                     connection.player_data.character.actor_id,
-                                    // TODO: Maybe revise sending this tuple, we'll see
-                                    (
-                                        house_id.unit.apartment_flag,
-                                        house_id.unit.apartment_division_plot_index,
-                                    ),
-                                    *slot,
+                                    translation.object_key,
                                     *position,
                                     *rotation,
-                                    indoors,
                                 ))
                                 .await;
 
                             // This ack doesn't need to be networked
                             connection
                                 .actor_control_self(ActorControlCategory::FurnitureTranslatedAck {
-                                    storage_id,
-                                    slot: (*slot % MAX_LARGE_STORAGE as u16) as u32,
-                                    plot_number: if !house_id.unit.apartment_flag {
-                                        house_id.unit.apartment_division_plot_index as u16
-                                    } else {
-                                        0
-                                    },
+                                    storage_id: translation.storage_id,
+                                    slot: translation.container_slot as u32,
+                                    plot_number: translation.plot_number,
                                 })
                                 .await;
                         }
@@ -3639,6 +3981,7 @@ async fn process_packet(
 
         // update lua player
         lua_player.player_data = connection.player_data.clone();
+        lua_player.housing_ward_context = connection.display_housing_ward_context_or_default();
     }
 
     true
@@ -3757,6 +4100,8 @@ async fn process_server_msg(
                     )
                     .await;
                 lua_player.zone_data = lua_zone;
+                lua_player.housing_ward_context =
+                    connection.display_housing_ward_context_or_default();
             }
             FromServer::TeleportOffered(party_member_index, teleport_info) => {
                 // By default, don't allow the player to go.
@@ -4189,11 +4534,13 @@ async fn client_loop(
     let mut lua_player = LuaPlayer::default();
 
     let mut buf = vec![0; RECEIVE_BUFFER_SIZE];
+    let mut pending_client_bytes = Vec::with_capacity(RECEIVE_BUFFER_SIZE);
     let mut client_handle = client_handle.clone();
     client_handle.actor_id = connection.player_data.character.actor_id;
 
     // Do an initial update otherwise it may be uninitialized for the first packet that needs Lua
     lua_player.player_data = connection.player_data.clone();
+    lua_player.housing_ward_context = connection.display_housing_ward_context_or_default();
 
     // tell the server we exist, now that we confirmed we are a legitimate connection
     connection
@@ -4212,8 +4559,23 @@ async fn client_loop(
             n = connection.socket.read(&mut buf) => {
                 match n {
                     Ok(n) => {
-                        if !process_packet(&mut connection, &mut lua_player, &mut events, client_handle.clone(), n, &buf).await {
-                            break;
+                        if n == 0 {
+                            if !process_packet(&mut connection, &mut lua_player, &mut events, client_handle.clone(), n, &buf).await {
+                                break;
+                            }
+                        } else {
+                            pending_client_bytes.extend_from_slice(&buf[..n]);
+                            let packets = drain_complete_client_packets(&mut pending_client_bytes);
+                            let mut disconnect = false;
+                            for packet in packets {
+                                if !process_packet(&mut connection, &mut lua_player, &mut events, client_handle.clone(), packet.len(), &packet).await {
+                                    disconnect = true;
+                                    break;
+                                }
+                            }
+                            if disconnect {
+                                break;
+                            }
                         }
                     },
                     Err(_) => {

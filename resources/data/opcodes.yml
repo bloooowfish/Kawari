@@ -812,6 +812,10 @@ ClientZoneIpcType:
   comment: Unknown purpose.
   opcode: 242
   size: 48
+- name: HousingItemOperation
+  comment: Housing appearance/staging item operation observed while remodeling estate fixtures.
+  opcode: 687
+  size: 48
 - name: StartTalkEvent
   comment: Unknown purpose.
   opcode: 229
@@ -1325,3 +1329,47 @@ CustomIpcType:
   comment: Response to requesting the full character list.
   opcode: 17
   size: 1024
+- name: RequestHousingSummary
+  comment: Requests a compact housing admin summary from the world server.
+  opcode: 18
+  size: 0
+- name: HousingSummaryResponse
+  comment: Response to RequestHousingSummary.
+  opcode: 19
+  size: 4096
+- name: RequestHousingEstateDetail
+  comment: Requests detailed housing admin data for one estate.
+  opcode: 20
+  size: 8
+- name: HousingEstateDetailResponse
+  comment: Response to RequestHousingEstateDetail.
+  opcode: 21
+  size: 8192
+- name: ResetHousingFurniture
+  comment: Deletes housing furniture rows for one estate.
+  opcode: 22
+  size: 8
+- name: ResetHousingEstate
+  comment: Deletes one housing estate row and its furniture rows.
+  opcode: 23
+  size: 8
+- name: UpdateHousingEstateText
+  comment: Updates an estate name and greeting for admin tools.
+  opcode: 24
+  size: 220
+- name: ExportHousingEstate
+  comment: Exports one housing estate and its furniture rows to JSON.
+  opcode: 25
+  size: 8
+- name: HousingEstateExported
+  comment: Response to ExportHousingEstate.
+  opcode: 26
+  size: 772
+- name: ImportHousingEstate
+  comment: Imports one housing estate JSON file into the world database.
+  opcode: 27
+  size: 260
+- name: HousingEstateImportResult
+  comment: Result message for housing admin import and mutation requests.
+  opcode: 28
+  size: 512

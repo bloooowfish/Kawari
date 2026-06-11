@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use strum_macros::{Display, EnumIter, FromRepr};
 
 use crate::{
-    constants::BASE_INVENTORY_ACTION, festivals::festival_name, ipc::zone::DutyFinderSetting,
+    constants::BASE_INVENTORY_ACTION, festivals::festival_name, ipc::zone::ContentRegistrationFlags,
 };
 
 /// Maxmimum length of a character's name.
@@ -759,18 +759,25 @@ pub fn get_aether_current_comp_flg_set_to_screenimage() -> HashMap<u32, u32> {
 }
 
 #[binrw]
-#[derive(Clone, Copy, Eq, PartialEq, Default)]
-pub struct EventState(u8);
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub struct InvisibilityFlags(u8);
 
 bitflags! {
-    impl EventState: u8 {
+    impl InvisibilityFlags: u8 {
+        const VISIBLE = 0;
         const UNK1 = 1;
         const UNK2 = 2;
         const UNK3 = 4;
     }
 }
 
-impl std::fmt::Debug for EventState {
+impl Default for InvisibilityFlags {
+    fn default() -> Self {
+        InvisibilityFlags::VISIBLE
+    }
+}
+
+impl std::fmt::Debug for InvisibilityFlags {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         bitflags::parser::to_writer(self, f)
     }
@@ -924,18 +931,18 @@ bitflags! {
 }
 
 impl DutyOption {
-    pub fn from_content_flags(flags: DutyFinderSetting) -> Self {
+    pub fn from_content_flags(flags: ContentRegistrationFlags) -> Self {
         let mut options = DutyOption::default();
 
-        if flags.contains(DutyFinderSetting::UNRESTRICTED_PARTY) {
+        if flags.contains(ContentRegistrationFlags::UNRESTRICTED_PARTY) {
             options.insert(DutyOption::UNRESTRICTED_PARTY);
         }
 
-        if flags.contains(DutyFinderSetting::MINIMUM_ITEM_LEVEL) {
+        if flags.contains(ContentRegistrationFlags::MINIMUM_ITEM_LEVEL) {
             options.insert(DutyOption::MINIMUM_ITEM_LEVEL);
         }
 
-        if flags.contains(DutyFinderSetting::SILENCE_ECHO) {
+        if flags.contains(ContentRegistrationFlags::SILENCE_ECHO) {
             options.insert(DutyOption::SILENCE_ECHO);
         }
 
@@ -1006,6 +1013,37 @@ impl Default for HouseId {
             room_number: 0,
             territory_type_id: 0xFFFF,
             world_id: 0xFFFF,
+        }
+    }
+}
+
+impl HouseId {
+    pub fn to_u64(self) -> u64 {
+        let unit = self.unit.apartment_division_plot_index
+            | if self.unit.apartment_flag { 0x80 } else { 0 };
+        let data = self.ward_index as u16 | (self.room_number << 6);
+
+        unit as u64
+            | ((self.unk1 as u64) << 8)
+            | ((data as u64) << 16)
+            | ((self.territory_type_id as u64) << 32)
+            | ((self.world_id as u64) << 48)
+    }
+
+    pub fn from_u64(value: u64) -> Self {
+        let unit = (value & 0xFF) as u8;
+        let data = ((value >> 16) & 0xFFFF) as u16;
+
+        Self {
+            unit: HouseUnit {
+                apartment_division_plot_index: unit & 0x7F,
+                apartment_flag: (unit & 0x80) != 0,
+            },
+            unk1: ((value >> 8) & 0xFF) as u8,
+            ward_index: (data & 0x3F) as u8,
+            room_number: data >> 6,
+            territory_type_id: ((value >> 32) & 0xFFFF) as u16,
+            world_id: ((value >> 48) & 0xFFFF) as u16,
         }
     }
 }
@@ -1095,9 +1133,12 @@ pub struct CrestData {
 
 /// Returns whether or not new instances of this `TerritoryIntendedUse` should be "private" (i.e. no other players are allowed to enter.)
 pub fn is_private_area(intended_use: TerritoryIntendedUse) -> bool {
-    // TODO: Maybe this exists on the Excel sheet?
-    intended_use == TerritoryIntendedUse::Inn
-        || intended_use == TerritoryIntendedUse::FreeCompanyGarrison
+    matches!(
+        intended_use,
+        TerritoryIntendedUse::Inn
+            | TerritoryIntendedUse::FreeCompanyGarrison
+            | TerritoryIntendedUse::HousingIndoor
+    )
 }
 
 /// Returns the internal housing row used for certain sheets.
@@ -1264,5 +1305,29 @@ mod tests {
             buffer.into_inner(),
             vec![0x81, 0x00, 0x86, 0x0F, 0x54, 0x01, 0x3F, 0x00]
         );
+    }
+
+    #[test]
+    fn house_id_packs_to_client_layout() {
+        let id = HouseId {
+            unit: HouseUnit {
+                apartment_division_plot_index: 4,
+                apartment_flag: false,
+            },
+            unk1: 0,
+            ward_index: 2,
+            room_number: 0,
+            territory_type_id: 340,
+            world_id: 67,
+        };
+
+        assert_eq!(HouseId::from_u64(id.to_u64()), id);
+        assert_eq!(id.to_u64(), 0x0043_0154_0002_0004);
+    }
+
+    #[test]
+    fn housing_indoor_is_private_area() {
+        assert!(is_private_area(TerritoryIntendedUse::HousingIndoor));
+        assert!(!is_private_area(TerritoryIntendedUse::HousingOutdoor));
     }
 }

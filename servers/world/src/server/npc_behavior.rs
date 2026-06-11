@@ -157,7 +157,9 @@ pub fn npc_behavior(
                 }
 
                 // Pick up any newly hated actors first.
-                if let Some(actor) = newly_hated_actor.take() {
+                if let Some(actor) = newly_hated_actor.take()
+                    && *state != NpcState::Stationary
+                {
                     *state = NpcState::Hate;
                     *current_target = Some(actor);
 

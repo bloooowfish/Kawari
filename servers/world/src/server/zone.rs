@@ -17,6 +17,11 @@ use crate::{
     lua::LuaZone,
     server::{
         NetworkedActor, WorldServer,
+        housing_object::{
+            remove_housing_furniture_object_networked,
+            spawn_housing_furniture_object_for_current_clients,
+            update_housing_furniture_object_position_networked, upsert_housing_furniture_object,
+        },
         instance::{Instance, QueuedTaskData},
         network::{DestinationNetwork, NetworkState},
     },
@@ -25,13 +30,15 @@ use crate::{
 use kawari::{
     common::{
         DistanceRange, DropIn, DropInLayer, DropInObjectData, ENTRANCE_CIRCLE_IDS, EOBJ_EXIT,
-        EOBJ_HOUSING_ENTRANCE, EOBJ_SHORTCUT, EOBJ_SHORTCUT_EXPLORER_MODE, EventState, HandlerType,
-        ObjectId, Position, WARP_DELAY, euler_to_direction, internal_housing_row,
+        EOBJ_HOUSING_ENTRANCE, EOBJ_SHORTCUT, EOBJ_SHORTCUT_EXPLORER_MODE, HandlerType,
+        InvisibilityFlags, ObjectId, Position, WARP_DELAY, euler_to_direction,
+        internal_housing_row,
     },
     config::get_config,
     ipc::zone::{
         ActorControlCategory, ActorSetPos, BattleNpcSubKind, CharacterDataFlag, CommonSpawn,
-        Conditions, DisplayFlag, ObjectKind, ServerZoneIpcData, ServerZoneIpcSegment, SpawnNpc,
+        Conditions, DisplayFlag, ObjectKind, SPAWN_OBJECT_TARGETABLE_STATUS_EVENT_OBJECT,
+        SPAWN_OBJECT_TARGETABLE_STATUS_NONE, ServerZoneIpcData, ServerZoneIpcSegment, SpawnNpc,
         SpawnObject, SpawnTreasure, WarpType,
     },
 };
@@ -105,6 +112,7 @@ pub struct Zone {
     bg_path: String,
     cached_housing_plots: Vec<HousingPlot>,
     cached_eobj_base_ids: HashMap<ObjectId, u32>,
+    cached_eobj_args2: HashMap<ObjectId, u32>,
 }
 
 impl Zone {
@@ -454,6 +462,7 @@ impl Zone {
             map_id: self.map_id,
             cached_npc_base_ids: self.cached_npc_base_ids.clone(),
             cached_eobj_base_ids: self.cached_eobj_base_ids.clone(),
+            cached_eobj_args2: self.cached_eobj_args2.clone(),
             ..Default::default()
         }
     }
@@ -530,15 +539,12 @@ impl Zone {
                         Affine3A::from(object.transform).to_scale_rotation_translation();
 
                     if let LayerEntryData::EventObject(eobj) = &object.data {
-                        let targetable_status = if let Some(event_type) = HandlerType::from_repr(
+                        let unselectable = if let Some(event_type) = HandlerType::from_repr(
                             game_data.get_eobj_data(eobj.parent_data.base_id) >> 16,
-                        ) && matches!(
-                            event_type,
-                            HandlerType::Invalid | HandlerType::GimmickRect
                         ) {
-                            1
+                            matches!(event_type, HandlerType::Invalid | HandlerType::GimmickRect)
                         } else {
-                            0 // make it unselectable to be on the safe side.
+                            true // make it unselectable to be on the safe side.
                         };
 
                         let base_id = if eobj.parent_data.base_id == EOBJ_SHORTCUT && explorer_mode
@@ -549,20 +555,26 @@ impl Zone {
                         };
 
                         // Hide shortcuts and exits, these will be spawned by the director.
-                        let event_state = if eobj.parent_data.base_id == EOBJ_SHORTCUT
+                        let visibility = if eobj.parent_data.base_id == EOBJ_SHORTCUT
                             || eobj.parent_data.base_id == EOBJ_EXIT
                         {
-                            EventState::UNK1 | EventState::UNK2 | EventState::UNK3
+                            InvisibilityFlags::UNK1
+                                | InvisibilityFlags::UNK2
+                                | InvisibilityFlags::UNK3
                         } else {
-                            EventState::empty()
+                            InvisibilityFlags::VISIBLE
                         };
 
                         let spawn = SpawnObject {
                             kind: ObjectKind::EventObj,
                             base_id,
-                            targetable_status,
-                            event_state,
-                            entity_id: ObjectId(fastrand::u32(..)),
+                            targetable_status: if unselectable {
+                                SPAWN_OBJECT_TARGETABLE_STATUS_NONE
+                            } else {
+                                SPAWN_OBJECT_TARGETABLE_STATUS_EVENT_OBJECT
+                            },
+                            visibility,
+                            entity_id: ObjectId(object.instance_id),
                             layout_id: object.instance_id,
                             bind_layout_id: eobj.bound_instance_id,
                             radius: 1.0,
@@ -573,6 +585,7 @@ impl Zone {
                         self.cached_objects.insert(eobj.parent_data.base_id, spawn);
                         self.cached_eobj_base_ids
                             .insert(spawn.entity_id, spawn.base_id);
+                        self.cached_eobj_args2.insert(spawn.entity_id, spawn.args2);
 
                         if game_data.get_eobj_pop_type(eobj.parent_data.base_id) == 1 {
                             object_spawns.push((spawn, layer.header.name.value.clone()));
@@ -627,6 +640,9 @@ impl Zone {
                 args2: u32::from_le_bytes([0, i as u8, 0, 0]),
                 ..Default::default()
             };
+            self.cached_eobj_base_ids
+                .insert(spawn.entity_id, spawn.base_id);
+            self.cached_eobj_args2.insert(spawn.entity_id, spawn.args2);
             object_spawns.push((spawn, String::default()));
         }
 
@@ -1416,33 +1432,92 @@ pub fn handle_zone_messages(
 
             true
         }
-        ToServer::PlaceFurniture(
-            from_actor_id,
-            container,
-            slot,
-            catalog_id,
-            stain,
-            position,
-            indoors,
-            rotation,
-            plot_index,
-        ) => {
+        ToServer::SyncHousingFurnitureObjects(from_actor_id, objects) => {
+            let mut data = data.lock();
+            let mut game_data = game_data.lock();
             let mut network = network.lock();
-            let data = data.lock();
 
-            let Some(instance) = data.find_actor_instance(*from_actor_id) else {
+            let Some(instance) = data.find_actor_instance_mut(*from_actor_id) else {
                 return true;
             };
 
+            tracing::info!(
+                from_actor_id = from_actor_id.0,
+                object_count = objects.len(),
+                "Syncing persisted housing furniture object overlays"
+            );
+            for object in objects {
+                let striking_dummy_data = (!object.indoors)
+                    .then(|| game_data.get_housing_striking_dummy_npc_data(object.catalog_id))
+                    .flatten();
+                let interactable = striking_dummy_data.is_some()
+                    || game_data
+                        .is_housing_furniture_interactable(object.catalog_id, object.indoors);
+                tracing::info!(
+                    from_actor_id = from_actor_id.0,
+                    slot = object.slot,
+                    catalog_id = object.catalog_id,
+                    indoors = object.indoors,
+                    plot_index = object.plot_index,
+                    interactable,
+                    striking_dummy = striking_dummy_data.is_some(),
+                    "Evaluated housing furniture object overlay"
+                );
+                if let Some(housing_actor_id) = upsert_housing_furniture_object(
+                    instance,
+                    *object,
+                    interactable,
+                    striking_dummy_data.as_ref(),
+                ) {
+                    spawn_housing_furniture_object_for_current_clients(
+                        instance,
+                        &mut network,
+                        housing_actor_id,
+                    );
+                }
+            }
+
+            true
+        }
+        ToServer::PlaceFurniture(from_actor_id, object, container, slot, stain) => {
+            let mut data = data.lock();
+            let mut game_data = game_data.lock();
+            let mut network = network.lock();
+
+            let Some(instance) = data.find_actor_instance_mut(*from_actor_id) else {
+                return true;
+            };
+
+            let striking_dummy_data = (!object.indoors)
+                .then(|| game_data.get_housing_striking_dummy_npc_data(object.catalog_id))
+                .flatten();
+            let interactable = striking_dummy_data.is_some()
+                || game_data.is_housing_furniture_interactable(object.catalog_id, object.indoors);
+            tracing::info!(
+                from_actor_id = from_actor_id.0,
+                slot = object.slot,
+                catalog_id = object.catalog_id,
+                indoors = object.indoors,
+                plot_index = object.plot_index,
+                interactable,
+                striking_dummy = striking_dummy_data.is_some(),
+                "Evaluated newly placed housing furniture object overlay"
+            );
+            let housing_actor_id = upsert_housing_furniture_object(
+                instance,
+                *object,
+                interactable,
+                striking_dummy_data.as_ref(),
+            );
             let msg = FromServer::FurniturePlaced(
                 *container,
                 *slot,
-                *catalog_id,
+                object.catalog_id,
                 *stain,
-                *position,
-                *indoors,
-                *rotation,
-                *plot_index,
+                object.position,
+                object.indoors,
+                object.rotation,
+                object.plot_index,
             );
 
             // We *do* want to include the sender here
@@ -1453,25 +1528,40 @@ pub fn handle_zone_messages(
                 DestinationNetwork::ZoneClients,
             );
 
+            if let Some(housing_actor_id) = housing_actor_id {
+                spawn_housing_furniture_object_for_current_clients(
+                    instance,
+                    &mut network,
+                    housing_actor_id,
+                );
+            }
+
             true
         }
-        ToServer::TranslateFurniture(
-            from_actor_id,
-            plot_info,
-            slot,
-            position,
-            rotation,
-            indoors,
-        ) => {
+        ToServer::TranslateFurniture(from_actor_id, object_key, position, rotation) => {
+            let mut data = data.lock();
             let mut network = network.lock();
-            let data = data.lock();
 
-            let Some(instance) = data.find_actor_instance(*from_actor_id) else {
+            let Some(instance) = data.find_actor_instance_mut(*from_actor_id) else {
                 return true;
             };
 
-            let msg =
-                FromServer::FurnitureTranslated(*plot_info, *slot, *position, *rotation, *indoors);
+            update_housing_furniture_object_position_networked(
+                instance,
+                &mut network,
+                *object_key,
+                *position,
+                *rotation,
+            );
+
+            let plot_info = (false, object_key.plot_index);
+            let msg = FromServer::FurnitureTranslated(
+                plot_info,
+                object_key.slot,
+                *position,
+                *rotation,
+                object_key.indoors,
+            );
 
             // We *don't* want to include the sender here
             network.send_in_range_instance(
@@ -1480,6 +1570,18 @@ pub fn handle_zone_messages(
                 msg,
                 DestinationNetwork::ZoneClients,
             );
+
+            true
+        }
+        ToServer::RemoveHousingFurnitureObject(from_actor_id, object_key) => {
+            let mut data = data.lock();
+            let mut network = network.lock();
+
+            let Some(instance) = data.find_actor_instance_mut(*from_actor_id) else {
+                return true;
+            };
+
+            remove_housing_furniture_object_networked(instance, &mut network, *object_key);
 
             true
         }

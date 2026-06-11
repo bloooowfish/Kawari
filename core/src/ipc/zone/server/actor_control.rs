@@ -3,9 +3,9 @@ use strum_macros::IntoStaticStr;
 
 use crate::{
     common::{
-        CharacterMode, DirectorEvent, EquipDisplayFlag, EventState, FateState, HandlerId, ObjectId,
-        ObjectTypeId, SharedGroupTimelineState, read_bool_from, read_packed_float, write_bool_as,
-        write_packed_float,
+        CharacterMode, DirectorEvent, EquipDisplayFlag, FateState, HandlerId, InvisibilityFlags,
+        ObjectId, ObjectTypeId, SharedGroupTimelineState, read_bool_from, read_packed_float,
+        write_bool_as, write_packed_float,
     },
     ipc::zone::{online_status::OnlineStatus, server::ContainerType},
 };
@@ -266,9 +266,9 @@ pub enum ActorControlCategory {
         handler_id: HandlerId,
     },
 
-    /// Updates the state for an event object.
+    /// Updates the invisibility flags for an actor.
     #[brw(magic = 106u32)]
-    SetEventState { state: EventState },
+    SetInvisibilityFlags { flags: InvisibilityFlags },
 
     #[brw(magic = 109u32)]
     DirectorEvent {
@@ -763,6 +763,22 @@ pub enum ActorControlCategory {
         unlocked: bool,
     },
 
+    /// The server displays the Exterior Remodeling window for the client.
+    #[brw(magic = 1002u32)]
+    ShowEstateExternalAppearanceUI { plot_index: u32 },
+
+    /// The server displays the Edit Interior material window for the client.
+    #[brw(magic = 1003u32)]
+    ShowEstateInternalAppearanceUI {},
+
+    /// The server acknowledges that an estate appearance remodeling session has ended.
+    #[brw(magic = 1005u32)]
+    FinishEstateAppearanceRemodel {},
+
+    /// The server acknowledges that an estate appearance item operation was applied.
+    #[brw(magic = 1008u32)]
+    FinishEstateAppearanceItemOperation {},
+
     /// The server acknowledges the client's request to remove an item from the world and put it back into their inventory. Doesn't seem to have any values, but we should keep unknowns for now, just in case...
     #[brw(magic = 1009u32)]
     FurnitureRemovedToInventoryAck {
@@ -796,6 +812,10 @@ pub enum ActorControlCategory {
         slot: u32,
     },
 
+    /// Hides the free company private chambers door in a personal housing interior.
+    #[brw(magic = 1024u32)]
+    HideAdditionalChambersDoor {},
+
     /// The server sets the interior lighting level for an observing client.
     #[brw(magic = 1034u32)]
     InteriorLightLevelForObserver {
@@ -813,6 +833,30 @@ pub enum ActorControlCategory {
         level: u32,
         /// This repeats the client trigger's unk back to them. It's always 1.
         unk2: u32,
+    },
+
+    /// The server populates the Interior Design renovation pattern window.
+    #[brw(magic = 1059u32)]
+    ShowEstateInteriorPatternUI {
+        #[br(map = read_bool_from::<u32>)]
+        #[bw(map = write_bool_as::<u32>)]
+        enabled: bool,
+        /// Row id on the HousingRenovation sheet.
+        current_renovation_row_id: u32,
+        /// Current HousingIndoorTerritory.Unknown0 value. Retail uses 0/1/2 for small/medium/large.
+        current_size: u32,
+        /// Echoed by the client when applying the selected renovation.
+        remodel_mode: u32,
+        /// Extra allowed-size bitmask. Retail captures currently use zero; the current size is allowed separately.
+        allowed_size_mask: u32,
+    },
+
+    /// The server closes or finishes the Interior Design renovation pattern flow.
+    #[brw(magic = 1060u32)]
+    FinishEstateInteriorPattern {
+        #[br(map = read_bool_from::<u32>)]
+        #[bw(map = write_bool_as::<u32>)]
+        enabled: bool,
     },
 
     #[brw(magic = 1204u32)]
@@ -1021,7 +1065,8 @@ pub struct ActorControl {
 #[binrw]
 #[derive(Debug, Clone, Default)]
 pub struct ActorControlSelf {
-    #[brw(pad_size_to = 40)] // take into account categories without params
+    #[brw(pad_after = 16)]
+    #[brw(pad_size_to = 24)] // take into account categories without params
     pub category: ActorControlCategory,
 }
 
@@ -1031,4 +1076,107 @@ pub struct ActorControlTarget {
     #[brw(pad_size_to = 24)] // take into account categories without params
     pub category: ActorControlCategory,
     pub target: ObjectTypeId,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use binrw::BinWrite;
+    use std::io::Cursor;
+
+    #[test]
+    fn show_estate_external_appearance_ui_writes_retail_category() {
+        let mut buffer = Cursor::new(Vec::new());
+        ActorControlSelf {
+            category: ActorControlCategory::ShowEstateExternalAppearanceUI { plot_index: 5 },
+        }
+        .write_le(&mut buffer)
+        .unwrap();
+
+        let bytes = buffer.into_inner();
+        assert_eq!(&bytes[0..4], &0x03EAu32.to_le_bytes());
+        assert_eq!(&bytes[4..8], &5u32.to_le_bytes());
+    }
+
+    #[test]
+    fn show_estate_internal_appearance_ui_writes_retail_category() {
+        let mut buffer = Cursor::new(Vec::new());
+        ActorControlSelf {
+            category: ActorControlCategory::ShowEstateInternalAppearanceUI {},
+        }
+        .write_le(&mut buffer)
+        .unwrap();
+
+        let bytes = buffer.into_inner();
+        assert_eq!(bytes.len(), 40);
+        assert_eq!(&bytes[0..4], &0x03EBu32.to_le_bytes());
+    }
+
+    #[test]
+    fn show_estate_interior_pattern_ui_writes_retail_category_and_params() {
+        let mut buffer = Cursor::new(Vec::new());
+        ActorControlSelf {
+            category: ActorControlCategory::ShowEstateInteriorPatternUI {
+                enabled: true,
+                current_renovation_row_id: 2,
+                current_size: 1,
+                remodel_mode: 0,
+                allowed_size_mask: 0,
+            },
+        }
+        .write_le(&mut buffer)
+        .unwrap();
+
+        let bytes = buffer.into_inner();
+        assert_eq!(bytes.len(), 40);
+        assert_eq!(&bytes[0..4], &1059u32.to_le_bytes());
+        assert_eq!(&bytes[4..8], &1u32.to_le_bytes());
+        assert_eq!(&bytes[8..12], &2u32.to_le_bytes());
+        assert_eq!(&bytes[12..16], &1u32.to_le_bytes());
+        assert_eq!(&bytes[16..20], &0u32.to_le_bytes());
+        assert_eq!(&bytes[20..24], &0u32.to_le_bytes());
+    }
+
+    #[test]
+    fn finish_estate_appearance_remodel_writes_retail_category() {
+        let mut buffer = Cursor::new(Vec::new());
+        ActorControlSelf {
+            category: ActorControlCategory::FinishEstateAppearanceRemodel {},
+        }
+        .write_le(&mut buffer)
+        .unwrap();
+
+        let bytes = buffer.into_inner();
+        assert_eq!(bytes.len(), 40);
+        assert_eq!(&bytes[0..4], &0x03EDu32.to_le_bytes());
+    }
+
+    #[test]
+    fn finish_estate_appearance_item_operation_writes_retail_category() {
+        let mut buffer = Cursor::new(Vec::new());
+        ActorControlSelf {
+            category: ActorControlCategory::FinishEstateAppearanceItemOperation {},
+        }
+        .write_le(&mut buffer)
+        .unwrap();
+
+        let bytes = buffer.into_inner();
+        assert_eq!(bytes.len(), 40);
+        assert_eq!(&bytes[0..4], &0x03F0u32.to_le_bytes());
+    }
+
+    #[test]
+    fn finish_estate_interior_pattern_writes_retail_category_and_param() {
+        let mut buffer = Cursor::new(Vec::new());
+        ActorControlSelf {
+            category: ActorControlCategory::FinishEstateInteriorPattern { enabled: true },
+        }
+        .write_le(&mut buffer)
+        .unwrap();
+
+        let bytes = buffer.into_inner();
+        assert_eq!(bytes.len(), 40);
+        assert_eq!(&bytes[0..4], &1060u32.to_le_bytes());
+        assert_eq!(&bytes[4..8], &1u32.to_le_bytes());
+    }
 }

@@ -39,14 +39,15 @@ use crate::{
 };
 use kawari::{
     common::{
-        CharacterMode, DEAD_DESPAWN_TIME, EventState, HandlerId, HandlerType, MAX_SPAWNED_ACTORS,
-        MAX_SPAWNED_OBJECTS, ObjectId, ObjectTypeId, ObjectTypeKind, Position,
+        CharacterMode, DEAD_DESPAWN_TIME, HandlerId, HandlerType, InvisibilityFlags,
+        MAX_SPAWNED_ACTORS, MAX_SPAWNED_OBJECTS, ObjectId, ObjectTypeId, ObjectTypeKind, Position,
         SharedGroupTimelineState, determine_initial_pop_range, euler_to_direction, is_private_area,
     },
     config::{FilesystemConfig, get_config},
     ipc::zone::{
         ActorControlCategory, ClientTriggerCommand, Condition, Conditions, EnmityList, Hater,
-        HaterList, PlayerEnmity, ServerZoneIpcData, ServerZoneIpcSegment, WarpType, WaymarkPreset,
+        HaterList, PlayerEnmity, SPAWN_OBJECT_TARGETABLE_STATUS_NONE, ServerZoneIpcData,
+        ServerZoneIpcSegment, WarpType, WaymarkPreset,
     },
 };
 
@@ -57,6 +58,7 @@ mod actor;
 mod chat;
 mod director;
 mod effect;
+mod housing_object;
 mod instance;
 mod linkshell;
 mod network;
@@ -347,6 +349,10 @@ fn set_shared_group_timeline_state(
     );
 }
 
+fn should_process_player_logic_tick_actor(actor: &NetworkedActor) -> bool {
+    matches!(actor, NetworkedActor::Player { .. }) && actor.is_valid()
+}
+
 fn server_logic_tick(
     data: Arc<Mutex<WorldServer>>,
     network: Arc<Mutex<NetworkState>>,
@@ -386,6 +392,10 @@ fn server_logic_tick(
 
             // Player area stuffs
             for (id, actor) in &instance.actors {
+                if !should_process_player_logic_tick_actor(actor) {
+                    continue;
+                }
+
                 // Only check players
                 let NetworkedActor::Player {
                     conditions,
@@ -685,6 +695,10 @@ fn server_logic_tick(
 
             // NOTE: I know this isn't retail accurate
             for (id, actor) in &mut instance.actors {
+                if !should_process_player_logic_tick_actor(actor) {
+                    continue;
+                }
+
                 if let NetworkedActor::Player { spawn, .. } = actor {
                     let in_combat = haters.contains_key(id);
                     let is_dead = spawn.common.health_points == 0;
@@ -2175,7 +2189,8 @@ pub async fn server_main_loop(
                 ToServer::CommenceDuty(from_actor_id) => {
                     let mut data = data.lock();
                     let entrance_actor_id;
-                    let state = EventState::UNK1 | EventState::UNK2 | EventState::UNK3;
+                    let flags =
+                        InvisibilityFlags::UNK1 | InvisibilityFlags::UNK2 | InvisibilityFlags::UNK3;
 
                     {
                         let Some(instance) = data.find_actor_instance_mut(from_actor_id) else {
@@ -2193,15 +2208,15 @@ pub async fn server_main_loop(
                         if let Some(NetworkedActor::Object { object, .. }) =
                             instance.find_actor_mut(entrance_actor_id)
                         {
-                            object.event_state = state;
-                            object.targetable_status = 1;
+                            object.visibility = flags;
+                            object.targetable_status = SPAWN_OBJECT_TARGETABLE_STATUS_NONE;
                         }
                     }
 
                     // Make the entrance circle invisible.
                     let msg = FromServer::ActorControl(
                         entrance_actor_id,
-                        ActorControlCategory::SetEventState { state },
+                        ActorControlCategory::SetInvisibilityFlags { flags },
                     );
 
                     let mut network = network.lock();
@@ -2479,4 +2494,37 @@ pub async fn server_main_loop(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn loading_placeholder_player_is_not_processed_by_player_logic_tick() {
+        let mut instance = Instance::default();
+        let actor_id = ObjectId(0xE000_0001);
+        instance.insert_empty_actor(actor_id);
+
+        let actor = instance.find_actor(actor_id).unwrap();
+
+        assert!(!should_process_player_logic_tick_actor(actor));
+    }
+
+    #[test]
+    fn loaded_player_is_processed_by_player_logic_tick() {
+        let mut instance = Instance::default();
+        let actor_id = ObjectId(0xE000_0001);
+        instance.insert_empty_actor(actor_id);
+
+        let actor = instance.find_actor_mut(actor_id).unwrap();
+        let NetworkedActor::Player { spawn, .. } = actor else {
+            panic!("insert_empty_actor should create a player actor");
+        };
+        spawn.common.name = "Cha Min".to_string();
+
+        let actor = instance.find_actor(actor_id).unwrap();
+
+        assert!(should_process_player_logic_tick_actor(actor));
+    }
 }

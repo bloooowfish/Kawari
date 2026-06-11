@@ -7,15 +7,11 @@ use crate::{
     zone_connection::TeleportQuery,
 };
 use kawari::{
-    common::{
-        FestivalId, HandlerId, HandlerType, HouseId, HouseUnit, HousingFlag, LandData, Position,
-        timestamp_secs,
-    },
+    common::{FestivalId, HandlerId, HandlerType, Position, timestamp_secs},
     config::get_config,
     constants::OBFUSCATION_ENABLED_MODE,
     ipc::zone::{
-        ActorControlCategory, Condition, DutyFinderSetting, FurnitureList, House, HouseExterior,
-        HouseList, HouseStatus, HousingInteriorDetails, MapEffects, PlotSize, ServerZoneIpcData,
+        ActorControlCategory, Condition, ContentRegistrationFlags, MapEffects, ServerZoneIpcData,
         ServerZoneIpcSegment, WarpType, WeatherChange, ZoneInit, ZoneInitFlags,
     },
     packet::{ConnectionState, PacketSegment, ScramblerKeyGenerator, SegmentData, SegmentType},
@@ -113,6 +109,24 @@ impl ZoneConnection {
 
         let config = get_config();
 
+        if let Some(intended_use) = TerritoryIntendedUse::from_repr(lua_zone.intended_use) {
+            self.resolve_active_housing_estate(intended_use, new_zone_id);
+            if intended_use == TerritoryIntendedUse::HousingOutdoor
+                && self
+                    .active_housing_ward_context
+                    .is_some_and(|context| context.territory_type_id != new_zone_id)
+            {
+                self.active_housing_ward_context = None;
+            } else if !self.in_housing_area(intended_use) {
+                self.active_housing_ward_context = None;
+                self.display_housing_ward_context = None;
+            }
+        } else {
+            self.active_housing_estate = None;
+            self.active_housing_ward_context = None;
+            self.display_housing_ward_context = None;
+        }
+
         // Send obsfucation init
         if config.world.enable_packet_obsfucation {
             let ipc = ServerZoneIpcSegment::new(ServerZoneIpcData::InitializeObfuscation {
@@ -140,31 +154,7 @@ impl ZoneConnection {
         .await;
 
         // Send owned housing list (unsure where this fits in before ZoneInit?!)
-        {
-            let ipc = ServerZoneIpcSegment::new(ServerZoneIpcData::OwnedHousing {
-                unk1: Default::default(),
-                unk2: Default::default(),
-                unk3: Default::default(),
-                unk4: Default::default(),
-                unk5: Default::default(),
-                apartment: LandData {
-                    id: HouseId {
-                        unit: HouseUnit {
-                            apartment_division_plot_index: 0,
-                            apartment_flag: true,
-                        },
-                        unk1: 0,
-                        ward_index: 0,
-                        room_number: 1,
-                        territory_type_id: 340,
-                        world_id: config.world.world_id,
-                    },
-                    flags: 19,
-                    unk1: 0,
-                },
-            });
-            self.send_ipc_self(ipc).await;
-        }
+        self.send_owned_housing().await;
 
         // Send the list of available items if we're in an inn, since its only accessible via their beds.
         if lua_zone.intended_use == TerritoryIntendedUse::Inn as u8 {
@@ -280,111 +270,11 @@ impl ZoneConnection {
         }
 
         if lua_zone.intended_use == TerritoryIntendedUse::HousingOutdoor as u8 {
-            let mut houses = [House::default(); 30];
-
-            // First, populate the houses in this ward. Note that for now, we treat every ward the same.
-            // TODO: For now, we hardcode 3 prefab houses as demonstration units until we implement more of the system. One cottage, one house and one mansion, all set to be individually owned and locked. Plots 5, 6, and 12 were chosen due to their close proximity to each other.
-            // Glade house (Wood)
-            houses[4] = House {
-                plot_size: PlotSize::Medium,
-                status: HouseStatus::HouseBuilt,
-                flags: HousingFlag::OPEN,
-                exterior: HouseExterior {
-                    roof_id: 1029,
-                    walls_id: 3589,
-                    windows_id: 2562,
-                    door_id: 514,
-                    ..Default::default()
-                },
-                ..Default::default()
-            };
-
-            // Hingan mansion (Mokuzo)
-            houses[5] = House {
-                plot_size: PlotSize::Large,
-                status: HouseStatus::HouseBuilt,
-                flags: HousingFlag::OPEN,
-                exterior: HouseExterior {
-                    roof_id: 1081,
-                    walls_id: 3632,
-                    windows_id: 2579,
-                    door_id: 531,
-                    ..Default::default()
-                },
-                ..Default::default()
-            };
-
-            // Highland cottage (Wood)
-            houses[11] = House {
-                plot_size: PlotSize::Small,
-                status: HouseStatus::HouseBuilt,
-                flags: HousingFlag::OPEN | HousingFlag::OWNED_BY_FC,
-                exterior: HouseExterior {
-                    roof_id: 1136,
-                    walls_id: 3687,
-                    windows_id: 2598,
-                    door_id: 550,
-                    ..Default::default()
-                },
-                ..Default::default()
-            };
-
-            let config = get_config();
-            self.send_ipc_self(ServerZoneIpcSegment::new(ServerZoneIpcData::HouseList(
-                HouseList {
-                    land_id: 0,
-                    ward: 0,
-                    territory_type_id: lua_zone.zone_id,
-                    world_id: config.world.world_id,
-                    subdivision: 257, // TODO: Figure out more about subdivisions
-                    houses,
-                },
-            )))
-            .await;
-
-            // Finally, populate the exterior furniture.
-            // TODO: Actually send some real furniture, once we can do that!
-            for index in 0..8 {
-                self.send_ipc_self(ServerZoneIpcSegment::new(ServerZoneIpcData::FurnitureList(
-                    FurnitureList {
-                        count: 8,
-                        index,
-                        ..Default::default()
-                    },
-                )))
-                .await;
-            }
+            self.send_housing_outdoor_init(lua_zone.zone_id).await;
         }
 
         if lua_zone.intended_use == TerritoryIntendedUse::HousingIndoor as u8 {
-            let config = get_config();
-            // Bare minimum stuff to make housing interiors load
-            self.send_ipc_self(ServerZoneIpcSegment::new(
-                ServerZoneIpcData::HousingInteriorDetails(HousingInteriorDetails::default()),
-            ))
-            .await;
-
-            // The LandId is currently set so that plugins like HousingPos/Buildingway can plop stuff down
-            self.send_ipc_self(ServerZoneIpcSegment::new(ServerZoneIpcData::FurnitureList(
-                FurnitureList {
-                    id: HouseId {
-                        unit: HouseUnit {
-                            apartment_division_plot_index: 0,
-                            apartment_flag: true,
-                        },
-                        unk1: 0,
-                        room_number: 1,
-                        ward_index: 0,
-                        territory_type_id: 340,
-                        world_id: config.world.world_id,
-                    },
-                    count: 1,
-                    index: 0,
-                    unk2: 100, // Indoors
-                    ..Default::default()
-                },
-            )))
-            .await;
+            self.send_housing_indoor_init(lua_zone.zone_id).await;
         }
 
         self.conditions
@@ -430,16 +320,16 @@ impl ZoneConnection {
                     if self
                         .content_settings
                         .unwrap_or_default()
-                        .contains(DutyFinderSetting::UNRESTRICTED_PARTY)
+                        .contains(ContentRegistrationFlags::UNRESTRICTED_PARTY)
                     {
                         self.content_settings
                             .unwrap_or_default()
-                            .contains(DutyFinderSetting::LEVEL_SYNC)
+                            .contains(ContentRegistrationFlags::LEVEL_SYNC)
                     } else {
                         !self
                             .content_settings
                             .unwrap_or_default()
-                            .contains(DutyFinderSetting::EXPLORER_MODE)
+                            .contains(ContentRegistrationFlags::EXPLORER_MODE)
                     }
                 };
 
@@ -477,7 +367,7 @@ impl ZoneConnection {
                 let flags = if self
                     .content_settings
                     .unwrap_or_default()
-                    .contains(DutyFinderSetting::EXPLORER_MODE)
+                    .contains(ContentRegistrationFlags::EXPLORER_MODE)
                     && director_type.requires_content_id()
                 {
                     1

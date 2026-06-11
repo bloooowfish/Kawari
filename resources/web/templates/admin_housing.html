@@ -1,0 +1,114 @@
+{% extends "admin_base.html" %}
+
+{% block title %}Kawari Admin Panel{% endblock %}
+{% set current_page = "housing" %}
+
+{% block adminbody %}
+<h1 class="h4 mb-3">Housing Admin</h1>
+
+{% if status_message %}
+<div class="alert alert-secondary" role="alert">
+    {{ status_message }}
+</div>
+{% endif %}
+
+<form action="/housing/import" method="post" class="row g-2 mb-4">
+    <div class="col-md-8">
+        <label class="form-label" for="import_path">Import path</label>
+        <input class="form-control" type="text" id="import_path" name="path" maxlength="260" placeholder="estate-123.json">
+        <div class="form-text">Only files inside <code>housing-exports</code> are allowed. Use <code>estate-123.json</code> or <code>housing-exports/estate-123.json</code>.</div>
+    </div>
+    <div class="col-md-4 align-self-end">
+        <button type="submit" class="btn btn-primary">Import Estate JSON</button>
+    </div>
+</form>
+
+<table class="table table-sm align-middle">
+    <thead>
+        <tr>
+            <th scope="col">Owner</th>
+            <th scope="col">Plot</th>
+            <th scope="col">House ID</th>
+            <th scope="col">Land Ident</th>
+            <th scope="col">Kind</th>
+            <th scope="col">Size</th>
+            <th scope="col">Flags</th>
+            <th scope="col">Furniture Counts</th>
+            <th scope="col">Actions</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for estate in estates %}
+        <tr>
+            <td>
+                {{ estate.owner_name or "Unowned" }}
+            </td>
+            <td>{{ estate.plot }}</td>
+            <td>{{ estate.house_id }}</td>
+            <td>{{ estate.land_ident }}</td>
+            <td>{{ estate.kind }}</td>
+            <td>{{ estate.size }}</td>
+            <td>{{ estate.flags }}</td>
+            <td class="small">
+                <div>Indoor placed: {{ estate.furniture_counts.indoor_placed }}</div>
+                <div>Indoor storeroom: {{ estate.furniture_counts.indoor_storeroom }}</div>
+                <div>Outdoor placed: {{ estate.furniture_counts.outdoor_placed }}</div>
+                <div>Outdoor storeroom: {{ estate.furniture_counts.outdoor_storeroom }}</div>
+                <div>Total: {{ estate.furniture_counts.total }}</div>
+            </td>
+            <td>
+                <div class="d-flex flex-column gap-2">
+                    <a class="btn btn-outline-secondary btn-sm" href="/housing?land_ident={{ estate.land_ident }}">View Detail</a>
+
+                    <form action="/housing/reset_furniture" method="post">
+                        <input type="hidden" name="land_ident" value="{{ estate.land_ident }}">
+                        <button type="submit" class="btn btn-warning btn-sm">Reset Furniture</button>
+                    </form>
+
+                    <form action="/housing/export" method="post">
+                        <input type="hidden" name="land_ident" value="{{ estate.land_ident }}">
+                        <button type="submit" class="btn btn-outline-primary btn-sm">Export JSON</button>
+                    </form>
+                </div>
+            </td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+
+{% if selected_estate %}
+<h2 class="h5 mt-4">Selected Estate Text</h2>
+<form action="/housing/update_text" method="post" class="row g-2 mb-3">
+    <input type="hidden" name="land_ident" value="{{ selected_estate.land_ident }}">
+    <div class="col-md-3">
+        <label class="form-label" for="selected_estate_name">Estate name</label>
+        <input class="form-control form-control-sm" type="text" id="selected_estate_name" name="name" maxlength="{{ name_max_bytes }}" value="{{ selected_estate.estate_name }}">
+    </div>
+    <div class="col-md-6">
+        <label class="form-label" for="selected_estate_greeting">Greeting</label>
+        <input class="form-control form-control-sm" type="text" id="selected_estate_greeting" name="greeting" maxlength="{{ greeting_max_bytes }}" value="{{ selected_estate.greeting }}">
+    </div>
+    <div class="col-md-3 align-self-end">
+        <button type="submit" class="btn btn-secondary btn-sm">Update Text</button>
+    </div>
+</form>
+
+<form action="/housing/reset_estate" method="post" class="row g-2 mb-3">
+    <input type="hidden" name="land_ident" value="{{ selected_estate.land_ident }}">
+    <div class="col-md-6 form-check align-self-center ms-2">
+        <input class="form-check-input" type="checkbox" id="confirm_reset_selected" name="confirm_reset">
+        <label class="form-check-label" for="confirm_reset_selected">
+            Confirm estate row and furniture reset
+        </label>
+    </div>
+    <div class="col-md-3">
+        <button type="submit" class="btn btn-danger btn-sm">Reset Estate</button>
+    </div>
+</form>
+{% endif %}
+
+{% if selected_detail_json %}
+<h2 class="h5 mt-4">Selected Detail JSON</h2>
+<pre class="border rounded p-3 bg-light">{{ selected_detail_json }}</pre>
+{% endif %}
+{% endblock %}

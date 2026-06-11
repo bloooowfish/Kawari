@@ -73,7 +73,11 @@ pub use currency_info::CurrencyInfo;
 pub use super::config::Config;
 
 mod spawn_object;
-pub use spawn_object::SpawnObject;
+pub use spawn_object::{
+    SPAWN_OBJECT_TARGETABLE_STATUS_EVENT_OBJECT,
+    SPAWN_OBJECT_TARGETABLE_STATUS_HOUSING_EVENT_OBJECT, SPAWN_OBJECT_TARGETABLE_STATUS_NONE,
+    SpawnObject,
+};
 
 mod quest_active_list;
 pub use quest_active_list::{ActiveQuest, QuestActiveList};
@@ -111,7 +115,7 @@ mod apartment_list;
 pub use apartment_list::{ApartmentList, ApartmentListEntry};
 
 mod house_list;
-pub use house_list::{House, HouseExterior, HouseList, HouseStatus};
+pub use house_list::{House, HouseExterior, HouseExteriorColors, HouseList, HouseStatus};
 
 mod housing_ward;
 pub use housing_ward::{HousingWardInfo, HousingWardSummaryItem};
@@ -901,15 +905,15 @@ pub enum ServerZoneIpcData {
     },
     FurnitureList(FurnitureList),
     OwnedHousing {
-        #[brw(pad_after = 8)] // believe these are always empty?
-        unk1: LandData,
         #[brw(pad_after = 8)]
-        unk2: LandData,
+        free_company_estate: LandData,
         #[brw(pad_after = 8)]
-        unk3: LandData,
-        unk4: LandData,
+        personal_estate: LandData,
         #[brw(pad_after = 8)]
-        unk5: LandData,
+        personal_chambers: LandData,
+        shared_estate_1: LandData,
+        #[brw(pad_after = 8)]
+        shared_estate_2: LandData,
         /// Your apartment unit.
         #[brw(pad_after = 8)]
         apartment: LandData,
@@ -1387,7 +1391,7 @@ pub enum ServerZoneIpcData {
         storage_id: ContainerType,
         /// Which slot the furniture was placed into.
         slot: u16,
-        /// The low 12 bits of the row number on the HousingFurniture sheet for this furniture. The row to that sheet can be obtained from the AdditionalData column on the Item Excel sheet. When the client receives this value, it then ORs it with 0x30000 to recreate the row number.
+        /// Entry id of the HousingFurniture sheet row for this furniture. The row to that sheet can be obtained from the AdditionalData column on the Item Excel sheet. FFXIVClientStructs currently identifies the indoor sheet row as 0x20000 | id.
         catalog_id: u16,
         unk1: u16, // Always 1? Changing it seems to have no visible effect so far.
         /// The furniture's dye/stain.
@@ -1405,7 +1409,7 @@ pub enum ServerZoneIpcData {
         /// The item slot the furniture was placed into.
         slot: u8,
         unk1: [u8; 2], // Likely just padding
-        /// The low 12 bits of the row number on the HousingYardObject sheet for this furniture. The row to that sheet can be obtained from the AdditionalData column on the Item Excel sheet. When the client receives this value, it then ORs it with 0x20000 to recreate the row number.
+        /// Entry id of the HousingYardObject sheet row for this furniture. The row to that sheet can be obtained from the AdditionalData column on the Item Excel sheet. FFXIVClientStructs currently identifies the outdoor sheet row as 0x30000 | id.
         catalog_id: u16,
         unk2: u16, // Observed as zeroes
         /// The furniture's dye/stain.
