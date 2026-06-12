@@ -38,6 +38,12 @@ bitflags! {
 
 impl std::fmt::Debug for SearchUIGrandCompanies {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        // Special-case NONE because it's 255 and indicates the *absence* of the flags!
+        // NOTE: before considering removal of this, please read the above comment!
+        if *self == SearchUIGrandCompanies::NONE {
+            return write!(f, "NONE");
+        }
+
         bitflags::parser::to_writer(self, f)
     }
 }
