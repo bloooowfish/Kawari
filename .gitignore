@@ -15,6 +15,7 @@ backups/
 temp.zip
 patches/
 docs/book
+docs/superpowers/
 /navimesh
 *.db-journal
 **/.diesel_lock

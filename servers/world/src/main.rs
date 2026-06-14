@@ -1003,22 +1003,13 @@ async fn process_packet(
                                 .actor_control_self(ActorControlCategory::SetItemLevel { level })
                                 .await;
 
-                            connection
-                                .handle
-                                .send(ToServer::ReadySpawnPlayer(
-                                    connection.id,
-                                    connection.player_data.character.actor_id,
-                                    connection.player_data.volatile.zone_id as u16,
-                                    connection.player_data.volatile.position,
-                                    connection.player_data.volatile.rotation as f32,
-                                    connection.pending_housing_login_exit_plot_location.take(),
-                                    if connection.player_data.unlock.cutscene_seen.contains(2) {
-                                        None
-                                    } else {
-                                        Some(connection.player_data.city_state)
-                                    }, // If seen the opening cutscene
-                                ))
-                                .await;
+                            let city_state_opening =
+                                if connection.player_data.unlock.cutscene_seen.contains(2) {
+                                    None
+                                } else {
+                                    Some(connection.player_data.city_state)
+                                }; // If seen the opening cutscene
+                            connection.send_ready_spawn_player(city_state_opening).await;
 
                             connection.send_mailbox_status().await;
                             connection.init_linkshells().await;

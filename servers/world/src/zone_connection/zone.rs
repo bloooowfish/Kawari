@@ -43,8 +43,8 @@ impl ZoneConnection {
     pub async fn change_zone_to_housing_plot(
         &mut self,
         plot_location: HousingPlotLocation,
-        fallback_position: Option<Position>,
-        fallback_rotation: Option<f32>,
+        fallback_position: Position,
+        fallback_rotation: f32,
         warp_type_info: Option<(WarpType, u8, u8, u8)>,
     ) {
         self.teleport_reason = TeleportReason::NotSpecified;

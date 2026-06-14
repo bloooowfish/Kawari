@@ -45,6 +45,14 @@ pub struct HousingPlotLocation {
     pub raw_plot_index: u8,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PlayerSpawnLocation {
+    pub zone_id: u16,
+    pub position: Position,
+    pub rotation: f32,
+    pub housing_plot_location: Option<HousingPlotLocation>,
+}
+
 impl std::fmt::Debug for ClientId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "ClientId ({})", self.0)
@@ -344,8 +352,8 @@ pub enum ToServer {
         ClientId,
         ObjectId,
         HousingPlotLocation,
-        Option<Position>,
-        Option<f32>,
+        Position,
+        f32,
         Option<(WarpType, u8, u8, u8)>,
     ),
     /// The player walks through a zone change line or passes through an underwater portal (e.g. in Ruby Sea).
@@ -375,15 +383,7 @@ pub enum ToServer {
     /// Warp with the specified aetheryte id.
     WarpAetheryte(ClientId, ObjectId, u32, bool),
     /// Ready to spawn the player (this happens during initrequest)
-    ReadySpawnPlayer(
-        ClientId,
-        ObjectId,
-        u16,
-        Position,
-        f32,
-        Option<HousingPlotLocation>,
-        Option<u8>,
-    ),
+    ReadySpawnPlayer(ClientId, ObjectId, PlayerSpawnLocation, Option<u8>),
     /// Ready to send the ZoneIn ACS
     ZoneIn(ClientId, ObjectId, bool),
     /// We need to summon a player's minion, and tell other clients

@@ -2585,8 +2585,8 @@ impl ZoneConnection {
             return;
         };
 
-        let position = housing_outdoor_exit_position(&estate);
-        let rotation = housing_outdoor_exit_rotation(&estate);
+        let position = housing_outdoor_exit_fallback_position(&estate);
+        let rotation = housing_outdoor_exit_fallback_rotation(&estate);
         let plot_location = housing_outdoor_exit_plot_location(&estate);
         tracing::debug!(
             content_id = self.player_data.character.content_id,
@@ -2597,7 +2597,7 @@ impl ZoneConnection {
         );
 
         if let Some(plot_location) = plot_location {
-            self.change_zone_to_housing_plot(plot_location, Some(position), Some(rotation), None)
+            self.change_zone_to_housing_plot(plot_location, position, rotation, None)
                 .await;
         } else {
             self.change_zone(
@@ -3484,7 +3484,7 @@ fn should_defer_housing_indoor_finish_loading(
 
 fn housing_interior_ready_primary_id(house_id: HouseId) -> u64 {
     let value = house_id.to_u64();
-    (value << 32) | (value >> 32)
+    value.rotate_right(32)
 }
 
 fn housing_interior_ready_secondary_id(active_estate: Option<&ActiveHousingEstate>) -> u64 {
@@ -4224,11 +4224,11 @@ pub(super) fn update_interior_json_renovation_row_id(
     serialize_housing_json(&interior, "housing interior renovation mutation")
 }
 
-fn housing_outdoor_exit_position(_estate: &HousingEstate) -> Position {
+fn housing_outdoor_exit_fallback_position(_estate: &HousingEstate) -> Position {
     Position(Vec3::new(140.0, 23.5, -0.83))
 }
 
-fn housing_outdoor_exit_rotation(_estate: &HousingEstate) -> f32 {
+fn housing_outdoor_exit_fallback_rotation(_estate: &HousingEstate) -> f32 {
     0.0
 }
 
@@ -4255,8 +4255,8 @@ fn housing_indoor_login_exit_location(
     let estate = estate.filter(|estate| !estate.is_apartment)?;
     Some(HousingLoginExitLocation {
         zone_id: estate.territory_type_id.clamp(0, u16::MAX as i32) as u16,
-        position: housing_outdoor_exit_position(estate),
-        rotation: housing_outdoor_exit_rotation(estate),
+        position: housing_outdoor_exit_fallback_position(estate),
+        rotation: housing_outdoor_exit_fallback_rotation(estate),
         plot_location: housing_outdoor_exit_plot_location(estate),
     })
 }
@@ -5454,15 +5454,17 @@ mod tests {
     }
 
     #[test]
-    fn housing_outdoor_exit_position_matches_large_plot_front_door() {
-        let position = housing_outdoor_exit_position(&estate(house_id(5, 0, false), 0x0B, false));
+    fn housing_outdoor_exit_fallback_position_matches_large_plot_front_door() {
+        let position =
+            housing_outdoor_exit_fallback_position(&estate(house_id(5, 0, false), 0x0B, false));
 
         assert_eq!(position, Position(Vec3::new(140.0, 23.5, -0.83)));
     }
 
     #[test]
-    fn housing_outdoor_exit_rotation_matches_large_plot_front_door() {
-        let rotation = housing_outdoor_exit_rotation(&estate(house_id(5, 0, false), 0x0B, false));
+    fn housing_outdoor_exit_fallback_rotation_matches_large_plot_front_door() {
+        let rotation =
+            housing_outdoor_exit_fallback_rotation(&estate(house_id(5, 0, false), 0x0B, false));
 
         assert_eq!(rotation, 0.0);
     }
@@ -5499,8 +5501,7 @@ mod tests {
 
     #[test]
     fn housing_indoor_login_exit_location_moves_house_to_outdoor_front_door() {
-        let mut house = estate(house_id(5, 0, false), 0x0B, false);
-        house.territory_type_id = 340;
+        let house = ward_estate(5, 0, TEST_HOUSING_LAND_FLAGS);
 
         let location =
             housing_indoor_login_exit_location(TerritoryIntendedUse::HousingIndoor, Some(&house))
@@ -5509,6 +5510,33 @@ mod tests {
         assert_eq!(location.zone_id, 340);
         assert_eq!(location.position, Position(Vec3::new(140.0, 23.5, -0.83)));
         assert_eq!(location.rotation, 0.0);
+        assert_eq!(
+            location.plot_location,
+            Some(HousingPlotLocation {
+                territory_type_id: 340,
+                raw_plot_index: 5,
+            })
+        );
+    }
+
+    #[test]
+    fn housing_indoor_login_exit_location_preserves_subdivision_raw_plot_location() {
+        let house = ward_estate(5, 1, TEST_HOUSING_LAND_FLAGS);
+
+        let location =
+            housing_indoor_login_exit_location(TerritoryIntendedUse::HousingIndoor, Some(&house))
+                .expect("housing indoor login should be normalized to the outside of the house");
+
+        assert_eq!(location.zone_id, 340);
+        assert_eq!(location.position, Position(Vec3::new(140.0, 23.5, -0.83)));
+        assert_eq!(location.rotation, 0.0);
+        assert_eq!(
+            location.plot_location,
+            Some(HousingPlotLocation {
+                territory_type_id: 340,
+                raw_plot_index: 35,
+            })
+        );
     }
 
     #[test]

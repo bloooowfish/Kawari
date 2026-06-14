@@ -1114,12 +1114,13 @@ pub async fn server_main_loop(
                 ToServer::ReadySpawnPlayer(
                     from_id,
                     from_actor_id,
-                    zone_id,
-                    position,
-                    rotation,
-                    housing_plot_location,
+                    spawn_location,
                     city_state_opening,
                 ) => {
+                    let zone_id = spawn_location.zone_id;
+                    let position = spawn_location.position;
+                    let rotation = spawn_location.rotation;
+                    let housing_plot_location = spawn_location.housing_plot_location;
                     tracing::info!("Player {from_id:?} is now spawning into {zone_id}....");
 
                     let mut network = network.lock();
@@ -1161,21 +1162,12 @@ pub async fn server_main_loop(
                     } else if let Some(plot_location) = housing_plot_location
                         && plot_location.territory_type_id == zone_id
                     {
-                        if let Some((position, rotation)) = instance
-                            .zone
-                            .housing_plot_exit_transform(plot_location.raw_plot_index)
-                        {
-                            exit_position = position;
-                            exit_rotation = rotation;
-                        } else {
-                            tracing::warn!(
-                                zone_id,
-                                raw_plot_index = plot_location.raw_plot_index,
-                                "Failed to find cached housing plot entrance for login; using persisted fallback transform"
+                        (exit_position, exit_rotation) =
+                            instance.zone.housing_plot_exit_or_fallback(
+                                plot_location.raw_plot_index,
+                                position,
+                                rotation,
                             );
-                            exit_position = position;
-                            exit_rotation = rotation;
-                        }
                     } else {
                         exit_position = position;
                         exit_rotation = rotation;

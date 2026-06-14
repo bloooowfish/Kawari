@@ -33,7 +33,7 @@ use kawari::{
 
 use super::{
     WorldDatabase,
-    common::{ClientId, HousingPlotLocation, ServerHandle},
+    common::{ClientId, HousingPlotLocation, PlayerSpawnLocation, ServerHandle, ToServer},
     inventory::{BuyBackList, HousingInventory, Inventory, Item},
 };
 
@@ -240,7 +240,42 @@ pub struct ZoneConnection {
     pub director_vars: Option<ServerZoneIpcSegment>,
 }
 
+fn take_player_spawn_location_from_parts(
+    zone_id: u16,
+    position: Position,
+    rotation: f32,
+    pending_housing_plot_location: &mut Option<HousingPlotLocation>,
+) -> PlayerSpawnLocation {
+    PlayerSpawnLocation {
+        zone_id,
+        position,
+        rotation,
+        housing_plot_location: pending_housing_plot_location.take(),
+    }
+}
+
 impl ZoneConnection {
+    fn take_player_spawn_location(&mut self) -> PlayerSpawnLocation {
+        take_player_spawn_location_from_parts(
+            self.player_data.volatile.zone_id as u16,
+            self.player_data.volatile.position,
+            self.player_data.volatile.rotation as f32,
+            &mut self.pending_housing_login_exit_plot_location,
+        )
+    }
+
+    pub async fn send_ready_spawn_player(&mut self, city_state_opening: Option<u8>) {
+        let spawn_location = self.take_player_spawn_location();
+        self.handle
+            .send(ToServer::ReadySpawnPlayer(
+                self.id,
+                self.player_data.character.actor_id,
+                spawn_location,
+                city_state_opening,
+            ))
+            .await;
+    }
+
     pub fn parse_packet(&mut self, data: &[u8]) -> Vec<PacketSegment<ClientZoneIpcSegment>> {
         parse_packet(data, &mut self.state)
     }
@@ -496,5 +531,35 @@ impl ZoneConnection {
             let mut db = self.database.lock();
             db.commit_grand_companies(&self.player_data);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use glam::Vec3;
+
+    #[test]
+    fn take_player_spawn_location_preserves_location_and_drains_housing_plot_once() {
+        let position = Position(Vec3::new(1.0, 2.0, 3.0));
+        let mut pending = Some(HousingPlotLocation {
+            territory_type_id: 340,
+            raw_plot_index: 5,
+        });
+
+        let first = take_player_spawn_location_from_parts(340, position, 1.25, &mut pending);
+        let second = take_player_spawn_location_from_parts(340, position, 1.25, &mut pending);
+
+        assert_eq!(first.zone_id, 340);
+        assert_eq!(first.position, position);
+        assert_eq!(first.rotation, 1.25);
+        assert_eq!(
+            first.housing_plot_location,
+            Some(HousingPlotLocation {
+                territory_type_id: 340,
+                raw_plot_index: 5,
+            })
+        );
+        assert_eq!(second.housing_plot_location, None);
     }
 }

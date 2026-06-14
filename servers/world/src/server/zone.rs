@@ -540,6 +540,23 @@ impl Zone {
             })
     }
 
+    pub fn housing_plot_exit_or_fallback(
+        &self,
+        raw_plot_index: u8,
+        fallback_position: Position,
+        fallback_rotation: f32,
+    ) -> (Position, f32) {
+        self.housing_plot_exit_transform(raw_plot_index)
+            .unwrap_or_else(|| {
+                tracing::warn!(
+                    zone_id = self.id,
+                    raw_plot_index,
+                    "Failed to find cached housing plot entrance; using fallback exit transform"
+                );
+                (fallback_position, fallback_rotation)
+            })
+    }
+
     /// Returns a list of event objects to spawn by default. If `explorer_mode`, replaces the shortcut object.
     ///
     /// For example, the Gold Saucer arcade machines or shortcuts in dungeons.
@@ -1275,25 +1292,19 @@ pub fn handle_zone_messages(
                 unk1,
             );
 
-            let (exit_position, exit_rotation) = target_instance
-                .zone
-                .housing_plot_exit_transform(plot_location.raw_plot_index)
-                .map(|(position, rotation)| (Some(position), Some(rotation)))
-                .unwrap_or_else(|| {
-                    tracing::warn!(
-                        zone_id = plot_location.territory_type_id,
-                        raw_plot_index = plot_location.raw_plot_index,
-                        "Failed to find cached housing plot entrance; using fallback exit transform"
-                    );
-                    (*fallback_position, *fallback_rotation)
-                });
+            let (exit_position, exit_rotation) =
+                target_instance.zone.housing_plot_exit_or_fallback(
+                    plot_location.raw_plot_index,
+                    *fallback_position,
+                    *fallback_rotation,
+                );
 
             do_change_zone(
                 &mut network,
                 target_instance,
                 needs_init_zone,
-                exit_position,
-                exit_rotation,
+                Some(exit_position),
+                Some(exit_rotation),
                 *from_id,
                 warp_type,
             );
@@ -1783,5 +1794,18 @@ mod tests {
 
         assert_position_close(position, Vec3::new(9.0, 2.0, 3.0));
         assert_eq!(rotation, std::f32::consts::FRAC_PI_2);
+    }
+
+    #[test]
+    fn housing_plot_exit_transform_returns_fallback_when_plot_is_missing() {
+        let zone = Zone::default();
+        let fallback_position = Position(Vec3::new(10.0, 20.0, 30.0));
+        let fallback_rotation = 1.5;
+
+        let (position, rotation) =
+            zone.housing_plot_exit_or_fallback(99, fallback_position, fallback_rotation);
+
+        assert_eq!(position, fallback_position);
+        assert_eq!(rotation, fallback_rotation);
     }
 }
