@@ -47,6 +47,7 @@ use icarus::PreHandler::PreHandlerSheet;
 use icarus::Quest::QuestSheet;
 use icarus::Recipe::RecipeSheet;
 use icarus::SpecialShop::SpecialShopSheet;
+use icarus::Stain::StainSheet;
 use icarus::SwitchTalkVariation::{SwitchTalkVariationRow, SwitchTalkVariationSheet};
 use icarus::TerritoryType::TerritoryTypeSheet;
 use icarus::TopicSelect::TopicSelectSheet;
@@ -97,6 +98,7 @@ pub struct GameData {
     pub housing_furniture_sheet: HousingFurnitureSheet,
     pub housing_yard_object_sheet: HousingYardObjectSheet,
     pub housing_training_doll_sheet: HousingTrainingDollSheet,
+    pub stain_sheet: StainSheet,
 }
 
 impl Default for GameData {
@@ -111,6 +113,10 @@ mod tests {
     use icarus::HousingIndoorTerritory::HousingIndoorTerritorySheet;
     use icarus::HousingRenovation::HousingRenovationSheet;
 
+    fn argb_color(red: u8, green: u8, blue: u8) -> u32 {
+        0xFF00_0000 | ((red as u32) << 16) | ((green as u32) << 8) | blue as u32
+    }
+
     #[test]
     fn housing_furniture_sheet_row_id_uses_retail_prefixes() {
         assert_eq!(housing_furniture_sheet_row_id(0x0123, true), 0x0003_0123);
@@ -123,8 +129,8 @@ mod tests {
     fn housing_furniture_usage_flags_interactable_rows() {
         assert!(!housing_furniture_usage_is_interactable(0, 0, 0));
         assert!(housing_furniture_usage_is_interactable(7, 0, 0));
-        assert!(housing_furniture_usage_is_interactable(0, 42, 0));
-        assert!(housing_furniture_usage_is_interactable(0, 0, 99));
+        assert!(!housing_furniture_usage_is_interactable(0, 42, 0));
+        assert!(!housing_furniture_usage_is_interactable(0, 0, 99));
     }
 
     #[test]
@@ -190,6 +196,35 @@ mod tests {
     }
 
     #[test]
+    fn closest_housing_stain_matches_remake_place_floor_distance_and_first_tie() {
+        let target = [0, 0, 0];
+        let candidates = [
+            (10, argb_color(2, 2, 0), true),
+            (11, argb_color(0, 2, 0), true),
+        ];
+
+        assert_eq!(
+            closest_housing_stain_from_candidates(target, candidates),
+            Some(10)
+        );
+    }
+
+    #[test]
+    fn closest_housing_stain_filters_non_housing_and_out_of_byte_rows() {
+        let target = [0x10, 0x20, 0x30];
+        let candidates = [
+            (1, argb_color(0x10, 0x20, 0x30), false),
+            (300, argb_color(0x10, 0x20, 0x30), true),
+            (2, argb_color(0x11, 0x20, 0x30), true),
+        ];
+
+        assert_eq!(
+            closest_housing_stain_from_candidates(target, candidates),
+            Some(2)
+        );
+    }
+
+    #[test]
     #[ignore = "requires local game data"]
     fn housing_renovation_sheet_resolves_simple_interior_territories() {
         let config = get_config();
@@ -239,6 +274,47 @@ mod tests {
             );
         }
     }
+}
+
+fn closest_housing_stain_from_candidates<I>(rgb: [u8; 3], candidates: I) -> Option<u8>
+where
+    I: IntoIterator<Item = (u32, u32, bool)>,
+{
+    let mut min_dist = 2000;
+    let mut closest_stain = None;
+
+    for (row_id, stain_color, is_housing_applicable) in candidates {
+        if !is_housing_applicable {
+            continue;
+        }
+
+        let Ok(row_id) = u8::try_from(row_id) else {
+            continue;
+        };
+
+        let current_dist = color_diff(stain_rgb_from_argb(stain_color), rgb);
+        if current_dist < min_dist {
+            min_dist = current_dist;
+            closest_stain = Some(row_id);
+        }
+    }
+
+    closest_stain
+}
+
+fn stain_rgb_from_argb(color: u32) -> [u8; 3] {
+    [
+        ((color >> 16) & 0xFF) as u8,
+        ((color >> 8) & 0xFF) as u8,
+        (color & 0xFF) as u8,
+    ]
+}
+
+fn color_diff(left: [u8; 3], right: [u8; 3]) -> i32 {
+    let red = i32::from(left[0]) - i32::from(right[0]);
+    let green = i32::from(left[1]) - i32::from(right[1]);
+    let blue = i32::from(left[2]) - i32::from(right[2]);
+    ((red * red + green * green + blue * blue) as f64).sqrt() as i32
 }
 
 #[derive(Debug)]
@@ -388,10 +464,10 @@ fn housing_furniture_sheet_row_id(catalog_id: u16, indoors: bool) -> u32 {
 
 fn housing_furniture_usage_is_interactable(
     usage_type: u8,
-    usage_parameter: u32,
-    custom_talk: u32,
+    _usage_parameter: u32,
+    _custom_talk: u32,
 ) -> bool {
-    usage_type != 0 || usage_parameter != 0 || custom_talk != 0
+    usage_type != 0
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -634,6 +710,9 @@ impl GameData {
         let housing_training_doll_sheet =
             HousingTrainingDollSheet::read_from(&mut resource_resolver, Language::None).unwrap();
 
+        let stain_sheet =
+            StainSheet::read_from(&mut resource_resolver, config.world.language()).unwrap();
+
         Self {
             resource: resource_resolver,
             item_sheet,
@@ -664,6 +743,7 @@ impl GameData {
             housing_furniture_sheet,
             housing_yard_object_sheet,
             housing_training_doll_sheet,
+            stain_sheet,
         }
     }
 
@@ -1841,10 +1921,20 @@ impl GameData {
     /// Returns a piece of furniture's catalog id from its item id. In this context, "catalog id"
     /// means the 16-bit entry id of the furniture's HousingFurniture/HousingYardObject row, which
     /// is what we send to the client when placing furniture.
-    pub fn get_furniture_catalog_id(&mut self, item_id: u32) -> Option<u16> {
+    pub fn get_furniture_catalog_id(&self, item_id: u32) -> Option<u16> {
         // First, we need the item's AdditionalData column to point us to where we need to look on the HousingFurniture sheet.
         let row = self.item_sheet.row(item_id)?;
         furniture_catalog_id_from_item_data(row.AdditionalData, row.ItemUICategory)
+    }
+
+    pub fn get_closest_housing_stain(&self, rgb: [u8; 3]) -> Option<u8> {
+        closest_housing_stain_from_candidates(
+            rgb,
+            (&self.stain_sheet)
+                .into_iter()
+                .flatten_subrows()
+                .map(|(row_id, row)| (row_id, row.Color, row.IsHousingApplicable)),
+        )
     }
 
     pub fn get_item_id_by_additional_data(

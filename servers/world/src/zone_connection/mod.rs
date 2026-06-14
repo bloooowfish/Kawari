@@ -49,6 +49,7 @@ mod lua;
 mod mail;
 mod party;
 mod quest;
+mod remake_place;
 mod social;
 pub mod spawn_allocator;
 mod stats;
@@ -186,6 +187,9 @@ pub struct ZoneConnection {
     pub active_housing_ward_context: Option<ActiveHousingWardContext>,
     pub display_housing_ward_context: Option<ActiveHousingWardContext>,
     pub pending_housing_appearance_item_operation: Option<PendingHousingAppearanceItemOperation>,
+    pub pending_housing_indoor_furniture_list_tail: bool,
+    pub pending_housing_indoor_finish_loading: bool,
+    pub pending_housing_indoor_furniture_object_overlay_sync: bool,
 
     pub obsfucation_data: ObsfucationData,
 

@@ -600,6 +600,12 @@ pub enum ContainerType {
     HousingInteriorPlacedItems6 = 25008,
     HousingInteriorPlacedItems7 = 25009,
     HousingInteriorPlacedItems8 = 25010,
+    HousingInteriorPlacedItems9 = 25011,
+    HousingInteriorPlacedItems10 = 25012,
+    HousingInteriorPlacedItems11 = 25013,
+    HousingInteriorPlacedItems12 = 25014,
+
+    HousingExteriorPlacedItems2 = 25200,
 
     HousingExteriorStoreroom = 27000,
     HousingInteriorStoreroom1 = 27001,
@@ -610,6 +616,11 @@ pub enum ContainerType {
     HousingInteriorStoreroom6 = 27006,
     HousingInteriorStoreroom7 = 27007,
     HousingInteriorStoreroom8 = 27008,
+    HousingInteriorStoreroom9 = 27009,
+    HousingInteriorStoreroom10 = 27010,
+    HousingInteriorStoreroom11 = 27011,
+
+    HousingExteriorStoreroom2 = 27200,
 
     DiscardingItemSentinel = 65535,
 }

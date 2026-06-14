@@ -9,8 +9,9 @@ use super::{
 use crate::common::{HousingFurnitureObject, HousingFurnitureObjectKey};
 use crate::gamedata::GameData;
 use crate::inventory::{
-    HousingInventory, Item, MAX_LARGE_STORAGE, flat_slot_for_container,
-    indoor_container_for_flat_slot,
+    HousingInventory, Item, flat_slot_for_container, housing_container_slot_capacity,
+    indoor_container_for_flat_slot, interior_placed_container_index, interior_placed_containers,
+    interior_storeroom_containers,
 };
 use crate::{
     HousingEstate, HousingFurniture, ItemInfoQuery, MAX_APARTMENT_ROOM_NUMBER,
@@ -27,9 +28,9 @@ use kawari::{
         ActorControlCategory, ActorSetPos, ApartmentList, ApartmentListEntry, AvailabilityType,
         Furniture, FurnitureList, House, HouseExterior, HouseExteriorColors, HouseList,
         HouseStatus, HousingEstateGreeting, HousingFlags, HousingInteriorDetails,
-        HousingItemOperation, HousingOccupiedLandInfo, HousingVacantLandInfo, HousingWardInfo,
-        HousingWardSummaryItem, ItemInfo, ItemOperation, PlotSize, PurchaseType, ServerZoneIpcData,
-        ServerZoneIpcSegment, TenantType,
+        HousingItemOperation, HousingObjectDataValueSet, HousingOccupiedLandInfo,
+        HousingVacantLandInfo, HousingWardInfo, HousingWardSummaryItem, ItemInfo, ItemOperation,
+        PlotSize, PurchaseType, ServerZoneIpcData, ServerZoneIpcSegment, TenantType,
     },
 };
 
@@ -62,6 +63,13 @@ pub struct PersistedHousingItemMove {
     pub object_key: Option<HousingFurnitureObjectKey>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct HousingLoginExitLocation {
+    zone_id: u16,
+    position: Position,
+    rotation: f32,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct OutdoorHousingLocation {
     territory_type_id: u16,
@@ -90,6 +98,7 @@ const ITEM_UI_CATEGORY_FENCE: u8 = 72;
 const ITEM_UI_CATEGORY_INTERIOR_WALL: u8 = 73;
 const ITEM_UI_CATEGORY_FLOORING: u8 = 74;
 const ITEM_UI_CATEGORY_CEILING_LIGHT: u8 = 75;
+const INDOOR_FURNITURE_LISTS_BEFORE_FINISH_LOADING: usize = 3;
 const HOUSING_PLOTS_PER_DIVISION: u8 = 30;
 const APARTMENT_INTERIOR_TERRITORY_TYPE_IDS: [u16; 5] = [608, 609, 610, 655, 999];
 
@@ -212,6 +221,41 @@ impl ZoneConnection {
             active_estate.as_ref(),
             self.player_data.character.content_id as u64,
         )
+    }
+
+    pub(crate) fn normalize_housing_indoor_login_location(
+        &mut self,
+        intended_use: TerritoryIntendedUse,
+    ) -> bool {
+        let active_estate = self.active_housing_estate.clone();
+        let estate = {
+            let mut database = self.database.lock();
+            selected_or_owned_housing_estate(
+                &mut database,
+                active_estate.as_ref(),
+                self.player_data.character.content_id as u64,
+            )
+        };
+        let Some(location) = housing_indoor_login_exit_location(intended_use, estate.as_ref())
+        else {
+            return false;
+        };
+
+        if let Some(estate) = estate.as_ref() {
+            self.set_active_housing_estate_from_row(estate, false);
+            tracing::debug!(
+                content_id = self.player_data.character.content_id,
+                land_ident = estate.land_ident,
+                from_zone_id = self.player_data.volatile.zone_id,
+                to_zone_id = location.zone_id,
+                "Normalizing housing indoor login to outdoor front door"
+            );
+        }
+
+        self.player_data.volatile.zone_id = location.zone_id as i32;
+        self.player_data.volatile.position = location.position;
+        self.player_data.volatile.rotation = location.rotation as f64;
+        true
     }
 
     pub async fn send_owned_housing(&mut self) {
@@ -461,8 +505,9 @@ impl ZoneConnection {
                 "Unable to resolve active housing estate for indoor init"
             );
 
+            self.pending_housing_indoor_furniture_object_overlay_sync = false;
             self.send_housing_interior_details("", 0, false).await;
-            self.send_housing_furniture_lists(HouseId::default(), &[], true)
+            self.send_housing_furniture_lists(HouseId::default(), &[], true, None)
                 .await;
             return;
         };
@@ -516,6 +561,9 @@ impl ZoneConnection {
                 estate,
             )
         };
+        let indoor_slot_capacity = estate
+            .as_ref()
+            .map(housing_interior_placed_slot_capacity_for_estate);
         let mut house_inventory = housing_inventory_from_rows(&all_furniture_rows);
         if let Some(estate) = estate.as_ref() {
             let mut game_data = self.gamedata.lock();
@@ -523,7 +571,7 @@ impl ZoneConnection {
         }
         self.player_data.house_inventory = house_inventory;
 
-        tracing::debug!(
+        tracing::warn!(
             content_id = self.player_data.character.content_id,
             land_ident = active_estate.land_ident,
             house_id = active_estate.house_id.to_u64(),
@@ -533,22 +581,233 @@ impl ZoneConnection {
 
         self.send_housing_interior_details(&interior_json, light_level, is_apartment)
             .await;
-        self.send_housing_furniture_lists(active_estate.house_id, &furniture_rows, true)
+        let lists = build_furniture_lists(
+            active_estate.house_id,
+            &furniture_rows,
+            true,
+            indoor_slot_capacity,
+        );
+        let initial_list_count = initial_housing_furniture_list_count(true, lists.len());
+        self.pending_housing_indoor_furniture_list_tail = initial_list_count < lists.len();
+        self.pending_housing_indoor_finish_loading = false;
+        self.pending_housing_indoor_furniture_object_overlay_sync = true;
+        self.send_built_housing_furniture_lists(
+            lists,
+            active_estate.house_id,
+            furniture_rows.len(),
+            true,
+            indoor_slot_capacity,
+            0,
+            initial_list_count,
+            if self.pending_housing_indoor_furniture_list_tail {
+                "before_finish_loading"
+            } else {
+                "all"
+            },
+        )
+        .await;
+        if hide_chambers_door {
+            self.actor_control_self(ActorControlCategory::HideAdditionalChambersDoor {})
+                .await;
+        }
+    }
+
+    pub async fn send_pending_housing_indoor_furniture_list_tail_after_remodel_gate(
+        &mut self,
+    ) -> bool {
+        if !self.pending_housing_indoor_furniture_list_tail {
+            return false;
+        }
+        self.pending_housing_indoor_furniture_list_tail = false;
+
+        if housing_indoor_init_needs_resolution(self.active_housing_estate.as_ref()) {
+            self.resolve_active_housing_estate(
+                TerritoryIntendedUse::HousingIndoor,
+                self.player_data.volatile.zone_id as u16,
+            );
+        }
+
+        let Some(active_estate) = self.active_housing_estate.clone() else {
+            tracing::warn!(
+                content_id = self.player_data.character.content_id,
+                zone_id = self.player_data.volatile.zone_id,
+                "Unable to resolve active housing estate for deferred furniture list tail"
+            );
+            return false;
+        };
+
+        let (furniture_rows, slot_capacity) = {
+            let mut database = self.database.lock();
+            let estate = database.housing_estate_by_house_id(active_estate.house_id);
+            let furniture_rows = database
+                .list_all_housing_furniture(active_estate.land_ident)
+                .into_iter()
+                .filter(is_interior_placed_furniture_row)
+                .collect::<Vec<_>>();
+            (
+                furniture_rows,
+                estate
+                    .as_ref()
+                    .map(housing_interior_placed_slot_capacity_for_estate),
+            )
+        };
+
+        tracing::warn!(
+            content_id = self.player_data.character.content_id,
+            land_ident = active_estate.land_ident,
+            house_id = active_estate.house_id.to_u64(),
+            furniture_count = furniture_rows.len(),
+            "Sending deferred indoor housing furniture list tail after remodel gate"
+        );
+
+        self.send_deferred_housing_furniture_lists(
+            active_estate.house_id,
+            &furniture_rows,
+            true,
+            slot_capacity,
+        )
+        .await;
+        self.send_housing_object_data_value_sets(&furniture_rows)
             .await;
-        let furniture_objects = furniture_rows
-            .iter()
-            .filter_map(|row| housing_furniture_object_from_row(row, true, 0))
-            .collect::<Vec<_>>();
+        self.send_housing_interior_ready(active_estate.house_id)
+            .await;
+        true
+    }
+
+    async fn send_housing_object_data_value_sets(&mut self, rows: &[HousingFurniture]) {
+        let value_sets = housing_object_data_value_sets_from_rows(rows);
+        tracing::debug!(
+            content_id = self.player_data.character.content_id,
+            value_set_count = value_sets.len(),
+            "Sending housing object data value sets"
+        );
+
+        for value_set in value_sets {
+            self.send_ipc_self(ServerZoneIpcSegment::new(
+                ServerZoneIpcData::HousingObjectDataValueSet(value_set),
+            ))
+            .await;
+        }
+    }
+
+    async fn send_housing_interior_ready(&mut self, house_id: HouseId) {
+        let primary_id = housing_interior_ready_primary_id(house_id);
+        let secondary_id = housing_interior_ready_secondary_id(self.active_housing_estate.as_ref());
+        tracing::debug!(
+            content_id = self.player_data.character.content_id,
+            house_id = house_id.to_u64(),
+            primary_id,
+            secondary_id,
+            "Sending housing interior ready actor control"
+        );
+        self.actor_control_self(ActorControlCategory::HousingInteriorReady {
+            primary_id,
+            secondary_id,
+            unk1: 0,
+        })
+        .await;
+    }
+
+    pub async fn sync_pending_housing_indoor_furniture_object_overlays_after_loading_gate(
+        &mut self,
+        intended_use: TerritoryIntendedUse,
+        reason: &'static str,
+    ) {
+        if !should_sync_housing_indoor_furniture_object_overlays_after_loading_gate(
+            intended_use,
+            self.pending_housing_indoor_furniture_list_tail,
+            self.pending_housing_indoor_furniture_object_overlay_sync,
+        ) {
+            return;
+        }
+        self.sync_pending_housing_indoor_furniture_object_overlays(reason)
+            .await;
+    }
+
+    pub async fn sync_pending_housing_indoor_furniture_object_overlays_after_remodel_gate(
+        &mut self,
+        intended_use: TerritoryIntendedUse,
+        tail_sent: bool,
+    ) {
+        if !should_sync_housing_indoor_furniture_object_overlays_after_remodel_gate(
+            intended_use,
+            tail_sent,
+            self.pending_housing_indoor_furniture_object_overlay_sync,
+        ) {
+            return;
+        }
+        self.sync_pending_housing_indoor_furniture_object_overlays("after_remodel_gate")
+            .await;
+    }
+
+    pub async fn sync_housing_furniture_object_overlays_after_zone_in(
+        &mut self,
+        intended_use: TerritoryIntendedUse,
+    ) {
+        if !should_sync_housing_indoor_furniture_object_overlays_on_finish_zoning(
+            intended_use,
+            self.pending_housing_indoor_furniture_object_overlay_sync,
+        ) {
+            return;
+        }
+        self.sync_pending_housing_indoor_furniture_object_overlays("finish_zoning")
+            .await;
+    }
+
+    pub fn should_defer_housing_indoor_finish_loading(
+        &self,
+        intended_use: TerritoryIntendedUse,
+    ) -> bool {
+        should_defer_housing_indoor_finish_loading(
+            intended_use,
+            self.pending_housing_indoor_furniture_list_tail,
+        )
+    }
+
+    async fn sync_pending_housing_indoor_furniture_object_overlays(
+        &mut self,
+        reason: &'static str,
+    ) {
+        if housing_indoor_init_needs_resolution(self.active_housing_estate.as_ref()) {
+            self.resolve_active_housing_estate(
+                TerritoryIntendedUse::HousingIndoor,
+                self.player_data.volatile.zone_id as u16,
+            );
+        }
+
+        let Some(active_estate) = self.active_housing_estate.clone() else {
+            tracing::warn!(
+                content_id = self.player_data.character.content_id,
+                zone_id = self.player_data.volatile.zone_id,
+                "Unable to resolve active housing estate for deferred furniture object overlay sync"
+            );
+            return;
+        };
+
+        self.pending_housing_indoor_furniture_object_overlay_sync = false;
+        let furniture_objects = {
+            let mut database = self.database.lock();
+            housing_furniture_objects_from_rows(
+                &database.list_all_housing_furniture(active_estate.land_ident),
+                true,
+                0,
+            )
+        };
+
+        tracing::warn!(
+            content_id = self.player_data.character.content_id,
+            land_ident = active_estate.land_ident,
+            house_id = active_estate.house_id.to_u64(),
+            object_count = furniture_objects.len(),
+            reason,
+            "Syncing indoor housing furniture object overlays"
+        );
         self.handle
             .send(ToServer::SyncHousingFurnitureObjects(
                 self.player_data.character.actor_id,
                 furniture_objects,
             ))
             .await;
-        if hide_chambers_door {
-            self.actor_control_self(ActorControlCategory::HideAdditionalChambersDoor {})
-                .await;
-        }
     }
 
     pub fn reload_active_housing_inventory(&mut self, intended_use: TerritoryIntendedUse) {
@@ -729,7 +988,7 @@ impl ZoneConnection {
             }
         }
 
-        simple_housing_indoor_territory_type_id(housing_estate_plot_size(estate))
+        housing_default_indoor_entry_territory_type_id_for_estate(estate)
     }
 
     pub fn current_housing_interior_pattern_context(
@@ -1749,18 +2008,74 @@ impl ZoneConnection {
         house_id: HouseId,
         rows: &[HousingFurniture],
         indoors: bool,
+        slot_capacity: Option<usize>,
     ) {
-        let lists = build_furniture_lists(house_id, rows, indoors);
+        let lists = build_furniture_lists(house_id, rows, indoors, slot_capacity);
+        self.send_built_housing_furniture_lists(
+            lists,
+            house_id,
+            rows.len(),
+            indoors,
+            slot_capacity,
+            0,
+            usize::MAX,
+            "all",
+        )
+        .await;
+    }
+
+    async fn send_deferred_housing_furniture_lists(
+        &mut self,
+        house_id: HouseId,
+        rows: &[HousingFurniture],
+        indoors: bool,
+        slot_capacity: Option<usize>,
+    ) {
+        let lists = build_furniture_lists(house_id, rows, indoors, slot_capacity);
+        let start_index = deferred_housing_furniture_list_start_index(indoors, lists.len());
+        self.send_built_housing_furniture_lists(
+            lists,
+            house_id,
+            rows.len(),
+            indoors,
+            slot_capacity,
+            start_index,
+            usize::MAX,
+            "after_remodel_gate",
+        )
+        .await;
+    }
+
+    async fn send_built_housing_furniture_lists(
+        &mut self,
+        lists: Vec<FurnitureList>,
+        house_id: HouseId,
+        furniture_count: usize,
+        indoors: bool,
+        slot_capacity: Option<usize>,
+        start_index: usize,
+        end_index: usize,
+        phase: &'static str,
+    ) {
+        let list_count = lists.len();
+        let start_index = start_index.min(list_count);
+        let end_index = end_index.min(list_count);
+        let send_count = end_index.saturating_sub(start_index);
 
         tracing::debug!(
             house_id = house_id.to_u64(),
-            furniture_count = rows.len(),
-            list_count = lists.len(),
+            furniture_count,
+            list_count,
+            start_index,
+            end_index,
+            send_count,
             indoors,
+            slot_capacity,
+            phase,
             "Sending housing furniture lists"
         );
 
-        for list in lists {
+        for list in lists.into_iter().skip(start_index).take(send_count) {
             self.send_ipc_self(ServerZoneIpcSegment::new(ServerZoneIpcData::FurnitureList(
                 list,
             )))
@@ -1801,7 +2116,7 @@ impl ZoneConnection {
         };
 
         let catalog_id = {
-            let mut gamedata = self.gamedata.lock();
+            let gamedata = self.gamedata.lock();
             gamedata
                 .get_furniture_catalog_id(transfer_item.item_id)
                 .unwrap_or_default()
@@ -2416,11 +2731,56 @@ fn housing_estate_plot_size(estate: &HousingEstate) -> PlotSize {
     PlotSize::from_repr(estate.plot_size as u8).unwrap_or(PlotSize::Large)
 }
 
+fn housing_interior_placed_slot_capacity_for_estate(estate: &HousingEstate) -> usize {
+    if estate.is_apartment {
+        return Furniture::COUNT;
+    }
+
+    match housing_estate_plot_size(estate) {
+        PlotSize::Small => 300,
+        PlotSize::Medium => 450,
+        PlotSize::Large => 600,
+    }
+}
+
 fn simple_housing_indoor_territory_type_id(plot_size: PlotSize) -> u16 {
     match plot_size {
         PlotSize::Small => TEST_HOUSING_INDOOR_TERRITORY_TYPE_ID_SMALL,
         PlotSize::Medium => TEST_HOUSING_INDOOR_TERRITORY_TYPE_ID_MEDIUM,
         PlotSize::Large => TEST_HOUSING_INDOOR_TERRITORY_TYPE_ID_LARGE,
+    }
+}
+
+fn housing_default_indoor_entry_territory_type_id_for_estate(estate: &HousingEstate) -> u16 {
+    let outdoor_territory_type_id = estate.territory_type_id.clamp(0, u16::MAX as i32) as u16;
+    original_housing_indoor_territory_type_id(
+        outdoor_territory_type_id,
+        housing_estate_plot_size(estate),
+    )
+    .unwrap_or_else(|| simple_housing_indoor_territory_type_id(housing_estate_plot_size(estate)))
+}
+
+fn original_housing_indoor_territory_type_id(
+    outdoor_territory_type_id: u16,
+    plot_size: PlotSize,
+) -> Option<u16> {
+    match (outdoor_territory_type_id, plot_size) {
+        (339, PlotSize::Small) => Some(282),
+        (339, PlotSize::Medium) => Some(283),
+        (339, PlotSize::Large) => Some(284),
+        (340, PlotSize::Small) => Some(342),
+        (340, PlotSize::Medium) => Some(343),
+        (340, PlotSize::Large) => Some(344),
+        (341, PlotSize::Small) => Some(345),
+        (341, PlotSize::Medium) => Some(346),
+        (341, PlotSize::Large) => Some(347),
+        (641, PlotSize::Small) => Some(649),
+        (641, PlotSize::Medium) => Some(650),
+        (641, PlotSize::Large) => Some(651),
+        (979, PlotSize::Small) => Some(980),
+        (979, PlotSize::Medium) => Some(981),
+        (979, PlotSize::Large) => Some(982),
+        _ => None,
     }
 }
 
@@ -3043,42 +3403,133 @@ fn build_furniture_lists(
     house_id: HouseId,
     rows: &[HousingFurniture],
     indoors: bool,
+    slot_capacity: Option<usize>,
 ) -> Vec<FurnitureList> {
     let max_rows = Furniture::COUNT * u8::MAX as usize;
-    if rows.len() > max_rows {
+    let max_send_rows = slot_capacity.unwrap_or(max_rows).min(max_rows);
+    if rows.len() > max_send_rows {
         tracing::warn!(
             house_id = house_id.to_u64(),
             furniture_count = rows.len(),
-            max_rows,
+            max_rows = max_send_rows,
             "Housing furniture list exceeds packet count cap; extra rows will not be sent"
         );
     }
 
-    let list_count = rows.len().div_ceil(Furniture::COUNT).max(1);
+    let total_slots = slot_capacity.unwrap_or_else(|| rows.len().max(1));
+    let list_count = total_slots.div_ceil(Furniture::COUNT).max(1);
     let count = list_count.min(u8::MAX as usize) as u8;
 
-    if rows.is_empty() {
-        return vec![FurnitureList {
-            id: house_id,
-            count,
-            index: 0,
-            unk2: furniture_area_kind(indoors),
-            ..Default::default()
-        }];
-    }
-
-    rows.chunks(Furniture::COUNT)
+    (0..list_count)
         .take(u8::MAX as usize)
-        .enumerate()
-        .map(|(index, chunk)| FurnitureList {
-            id: house_id,
-            index: index as u8,
-            count,
-            unk2: furniture_area_kind(indoors),
-            furniture: chunk.iter().map(furniture_from_row).collect(),
-            ..Default::default()
+        .map(|index| {
+            let start = index * Furniture::COUNT;
+            let end = (start + Furniture::COUNT)
+                .min(rows.len())
+                .min(max_send_rows);
+            let chunk = if start < end { &rows[start..end] } else { &[] };
+            FurnitureList {
+                id: house_id,
+                index: index as u8,
+                count,
+                unk2: furniture_list_slot_count(indoors, slot_capacity, index),
+                furniture: chunk.iter().map(furniture_from_row).collect(),
+                ..Default::default()
+            }
         })
         .collect()
+}
+
+fn initial_housing_furniture_list_count(indoors: bool, list_count: usize) -> usize {
+    if indoors {
+        list_count.min(INDOOR_FURNITURE_LISTS_BEFORE_FINISH_LOADING)
+    } else {
+        list_count
+    }
+}
+
+fn deferred_housing_furniture_list_start_index(indoors: bool, list_count: usize) -> usize {
+    initial_housing_furniture_list_count(indoors, list_count)
+}
+
+fn should_defer_housing_indoor_finish_loading(
+    intended_use: TerritoryIntendedUse,
+    pending_tail: bool,
+) -> bool {
+    intended_use == TerritoryIntendedUse::HousingIndoor && pending_tail
+}
+
+fn housing_interior_ready_primary_id(house_id: HouseId) -> u64 {
+    let value = house_id.to_u64();
+    (value << 32) | (value >> 32)
+}
+
+fn housing_interior_ready_secondary_id(active_estate: Option<&ActiveHousingEstate>) -> u64 {
+    const DEFAULT_READY_COOKIE: u32 = 0x0185_813a;
+    const READY_MODE: u32 = 12;
+
+    let cookie = active_estate
+        .map(|estate| {
+            stable_housing_ready_cookie(estate.land_ident as u64, estate.house_id.to_u64())
+        })
+        .unwrap_or(DEFAULT_READY_COOKIE);
+    ((cookie as u64) << 32) | READY_MODE as u64
+}
+
+fn stable_housing_ready_cookie(land_ident: u64, house_id: u64) -> u32 {
+    let mut value = 0x811c_9dc5u32;
+    for byte in land_ident
+        .to_le_bytes()
+        .into_iter()
+        .chain(house_id.to_le_bytes())
+    {
+        value ^= byte as u32;
+        value = value.wrapping_mul(0x0100_0193);
+    }
+    value.max(1)
+}
+
+fn housing_object_data_value_sets_from_rows(
+    rows: &[HousingFurniture],
+) -> Vec<HousingObjectDataValueSet> {
+    rows.iter()
+        .filter(|row| is_interior_placed_furniture_row(row))
+        .filter_map(housing_object_data_value_set_from_row)
+        .collect()
+}
+
+fn housing_object_data_value_set_from_row(
+    row: &HousingFurniture,
+) -> Option<HousingObjectDataValueSet> {
+    let container = housing_container_type_from_i32(row.container_type)?;
+    let furniture_index = flat_slot_for_container(container, row.slot as u16)?;
+    Some(HousingObjectDataValueSet {
+        furniture_index,
+        ..Default::default()
+    })
+}
+
+fn should_sync_housing_indoor_furniture_object_overlays_after_remodel_gate(
+    intended_use: TerritoryIntendedUse,
+    tail_sent: bool,
+    pending_overlay_sync: bool,
+) -> bool {
+    intended_use == TerritoryIntendedUse::HousingIndoor && tail_sent && pending_overlay_sync
+}
+
+fn should_sync_housing_indoor_furniture_object_overlays_after_loading_gate(
+    intended_use: TerritoryIntendedUse,
+    pending_tail: bool,
+    pending_overlay_sync: bool,
+) -> bool {
+    intended_use == TerritoryIntendedUse::HousingIndoor && !pending_tail && pending_overlay_sync
+}
+
+fn should_sync_housing_indoor_furniture_object_overlays_on_finish_zoning(
+    _intended_use: TerritoryIntendedUse,
+    _pending_overlay_sync: bool,
+) -> bool {
+    false
 }
 
 fn build_estate_furniture_lists(
@@ -3092,7 +3543,7 @@ fn build_estate_furniture_lists(
         outdoor_house_id_from_estate(estate)
     };
 
-    build_furniture_lists(house_id, rows, indoors)
+    build_furniture_lists(house_id, rows, indoors, None)
 }
 
 fn build_outdoor_estate_furniture_lists(
@@ -3144,6 +3595,16 @@ fn housing_furniture_object_from_row(
     })
 }
 
+fn housing_furniture_objects_from_rows(
+    rows: &[HousingFurniture],
+    indoors: bool,
+    plot_index: u8,
+) -> Vec<HousingFurnitureObject> {
+    rows.iter()
+        .filter_map(|row| housing_furniture_object_from_row(row, indoors, plot_index))
+        .collect()
+}
+
 fn housing_placed_container_matches_area(container: ContainerType, indoors: bool) -> bool {
     if indoors {
         is_interior_placed_container(container)
@@ -3153,17 +3614,7 @@ fn housing_placed_container_matches_area(container: ContainerType, indoors: bool
 }
 
 fn is_interior_placed_container(container: ContainerType) -> bool {
-    matches!(
-        container,
-        ContainerType::HousingInteriorPlacedItems1
-            | ContainerType::HousingInteriorPlacedItems2
-            | ContainerType::HousingInteriorPlacedItems3
-            | ContainerType::HousingInteriorPlacedItems4
-            | ContainerType::HousingInteriorPlacedItems5
-            | ContainerType::HousingInteriorPlacedItems6
-            | ContainerType::HousingInteriorPlacedItems7
-            | ContainerType::HousingInteriorPlacedItems8
-    )
+    interior_placed_container_index(container).is_some()
 }
 
 fn is_interior_placed_furniture_row(row: &HousingFurniture) -> bool {
@@ -3178,8 +3629,17 @@ fn is_exterior_placed_furniture_row(row: &HousingFurniture) -> bool {
     row.placed && row.container_type == ContainerType::HousingExteriorPlacedItems as u16 as i32
 }
 
-fn furniture_area_kind(indoors: bool) -> u8 {
-    if indoors { 100 } else { 0 }
+fn furniture_list_slot_count(indoors: bool, slot_capacity: Option<usize>, list_index: usize) -> u8 {
+    if !indoors {
+        return 0;
+    }
+
+    let Some(slot_capacity) = slot_capacity else {
+        return Furniture::COUNT as u8;
+    };
+
+    let start = list_index * Furniture::COUNT;
+    slot_capacity.saturating_sub(start).min(Furniture::COUNT) as u8
 }
 
 fn housing_inventory_from_rows(rows: &[HousingFurniture]) -> HousingInventory {
@@ -3196,7 +3656,7 @@ fn housing_inventory_from_rows(rows: &[HousingFurniture]) -> HousingInventory {
             continue;
         };
 
-        if row.slot < 0 || row.slot as usize >= MAX_LARGE_STORAGE {
+        if row.slot < 0 || row.slot as usize >= housing_container_slot_capacity(container) {
             tracing::warn!(
                 container_type = row.container_type,
                 slot = row.slot,
@@ -3456,7 +3916,25 @@ fn clear_housing_reset_cache(
 }
 
 fn housing_container_type_from_i32(container_type: i32) -> Option<ContainerType> {
-    match container_type as u16 {
+    let raw_container_type = container_type as u16;
+
+    if let Some(container) = interior_placed_containers()
+        .iter()
+        .copied()
+        .find(|container| *container as u16 == raw_container_type)
+    {
+        return Some(container);
+    }
+
+    if let Some(container) = interior_storeroom_containers()
+        .iter()
+        .copied()
+        .find(|container| *container as u16 == raw_container_type)
+    {
+        return Some(container);
+    }
+
+    match raw_container_type {
         x if x == ContainerType::HousingExteriorAppearance as u16 => {
             Some(ContainerType::HousingExteriorAppearance)
         }
@@ -3466,56 +3944,8 @@ fn housing_container_type_from_i32(container_type: i32) -> Option<ContainerType>
         x if x == ContainerType::HousingInteriorAppearance as u16 => {
             Some(ContainerType::HousingInteriorAppearance)
         }
-        x if x == ContainerType::HousingInteriorPlacedItems1 as u16 => {
-            Some(ContainerType::HousingInteriorPlacedItems1)
-        }
-        x if x == ContainerType::HousingInteriorPlacedItems2 as u16 => {
-            Some(ContainerType::HousingInteriorPlacedItems2)
-        }
-        x if x == ContainerType::HousingInteriorPlacedItems3 as u16 => {
-            Some(ContainerType::HousingInteriorPlacedItems3)
-        }
-        x if x == ContainerType::HousingInteriorPlacedItems4 as u16 => {
-            Some(ContainerType::HousingInteriorPlacedItems4)
-        }
-        x if x == ContainerType::HousingInteriorPlacedItems5 as u16 => {
-            Some(ContainerType::HousingInteriorPlacedItems5)
-        }
-        x if x == ContainerType::HousingInteriorPlacedItems6 as u16 => {
-            Some(ContainerType::HousingInteriorPlacedItems6)
-        }
-        x if x == ContainerType::HousingInteriorPlacedItems7 as u16 => {
-            Some(ContainerType::HousingInteriorPlacedItems7)
-        }
-        x if x == ContainerType::HousingInteriorPlacedItems8 as u16 => {
-            Some(ContainerType::HousingInteriorPlacedItems8)
-        }
         x if x == ContainerType::HousingExteriorStoreroom as u16 => {
             Some(ContainerType::HousingExteriorStoreroom)
-        }
-        x if x == ContainerType::HousingInteriorStoreroom1 as u16 => {
-            Some(ContainerType::HousingInteriorStoreroom1)
-        }
-        x if x == ContainerType::HousingInteriorStoreroom2 as u16 => {
-            Some(ContainerType::HousingInteriorStoreroom2)
-        }
-        x if x == ContainerType::HousingInteriorStoreroom3 as u16 => {
-            Some(ContainerType::HousingInteriorStoreroom3)
-        }
-        x if x == ContainerType::HousingInteriorStoreroom4 as u16 => {
-            Some(ContainerType::HousingInteriorStoreroom4)
-        }
-        x if x == ContainerType::HousingInteriorStoreroom5 as u16 => {
-            Some(ContainerType::HousingInteriorStoreroom5)
-        }
-        x if x == ContainerType::HousingInteriorStoreroom6 as u16 => {
-            Some(ContainerType::HousingInteriorStoreroom6)
-        }
-        x if x == ContainerType::HousingInteriorStoreroom7 as u16 => {
-            Some(ContainerType::HousingInteriorStoreroom7)
-        }
-        x if x == ContainerType::HousingInteriorStoreroom8 as u16 => {
-            Some(ContainerType::HousingInteriorStoreroom8)
         }
         _ => None,
     }
@@ -3769,6 +4199,22 @@ fn housing_outdoor_exit_rotation(_estate: &HousingEstate) -> f32 {
     0.0
 }
 
+fn housing_indoor_login_exit_location(
+    intended_use: TerritoryIntendedUse,
+    estate: Option<&HousingEstate>,
+) -> Option<HousingLoginExitLocation> {
+    if intended_use != TerritoryIntendedUse::HousingIndoor {
+        return None;
+    }
+
+    let estate = estate.filter(|estate| !estate.is_apartment)?;
+    Some(HousingLoginExitLocation {
+        zone_id: estate.territory_type_id.clamp(0, u16::MAX as i32) as u16,
+        position: housing_outdoor_exit_position(estate),
+        rotation: housing_outdoor_exit_rotation(estate),
+    })
+}
+
 fn should_hide_additional_chambers_door(flags: i32) -> bool {
     flags & FREE_COMPANY_HOUSING_FLAG == 0
 }
@@ -3778,18 +4224,8 @@ fn can_edit_housing_estate(estate: &HousingEstate, content_id: u64) -> bool {
 }
 
 fn should_broadcast_housing_item_removal(container: ContainerType) -> bool {
-    matches!(
-        container,
-        ContainerType::HousingExteriorPlacedItems
-            | ContainerType::HousingInteriorPlacedItems1
-            | ContainerType::HousingInteriorPlacedItems2
-            | ContainerType::HousingInteriorPlacedItems3
-            | ContainerType::HousingInteriorPlacedItems4
-            | ContainerType::HousingInteriorPlacedItems5
-            | ContainerType::HousingInteriorPlacedItems6
-            | ContainerType::HousingInteriorPlacedItems7
-            | ContainerType::HousingInteriorPlacedItems8
-    )
+    container == ContainerType::HousingExteriorPlacedItems
+        || is_interior_placed_container(container)
 }
 
 fn is_housing_appearance_container(container: ContainerType) -> bool {
@@ -4198,7 +4634,7 @@ mod tests {
     fn build_furniture_lists_empty_indoor_sends_one_empty_list() {
         let id = house_id(4, 0, false);
 
-        let lists = build_furniture_lists(id, &[], true);
+        let lists = build_furniture_lists(id, &[], true, None);
 
         assert_eq!(lists.len(), 1);
         assert_eq!(lists[0].id, id);
@@ -4213,7 +4649,7 @@ mod tests {
         let id = house_id(4, 0, false);
         let position = Position(Vec3::new(1.0, 2.0, 3.0));
 
-        let lists = build_furniture_lists(id, &[furniture_row(123, position, 1.25)], true);
+        let lists = build_furniture_lists(id, &[furniture_row(123, position, 1.25)], true, None);
 
         assert_eq!(lists.len(), 1);
         assert_eq!(lists[0].furniture.len(), 1);
@@ -4227,7 +4663,7 @@ mod tests {
         let id = house_id(4, 0, false);
         let rows = vec![furniture_row(123, Position::default(), 0.0); 101];
 
-        let lists = build_furniture_lists(id, &rows, true);
+        let lists = build_furniture_lists(id, &rows, true, None);
 
         assert_eq!(lists.len(), 2);
         assert_eq!(lists[0].count, 2);
@@ -4239,10 +4675,179 @@ mod tests {
     }
 
     #[test]
+    fn build_furniture_lists_uses_indoor_slot_capacity() {
+        let id = house_id(4, 0, false);
+        let rows = vec![furniture_row(123, Position::default(), 0.0); 300];
+
+        let lists = build_furniture_lists(id, &rows, true, Some(450));
+
+        assert_eq!(lists.len(), 5);
+        assert!(lists.iter().all(|list| list.count == 5));
+        assert_eq!(lists[0].unk2, 100);
+        assert_eq!(lists[3].unk2, 100);
+        assert_eq!(lists[4].unk2, 50);
+        assert_eq!(lists[0].furniture.len(), 100);
+        assert_eq!(lists[1].furniture.len(), 100);
+        assert_eq!(lists[2].furniture.len(), 100);
+        assert_eq!(lists[3].furniture.len(), 0);
+        assert_eq!(lists[4].furniture.len(), 0);
+    }
+
+    #[test]
+    fn build_furniture_lists_large_capacity_matches_six_hundred_slots() {
+        let id = house_id(4, 0, false);
+        let rows = vec![furniture_row(123, Position::default(), 0.0); 598];
+
+        let lists = build_furniture_lists(id, &rows, true, Some(600));
+
+        assert_eq!(lists.len(), 6);
+        assert!(lists.iter().all(|list| list.count == 6));
+        assert!(lists.iter().all(|list| list.unk2 == 100));
+        assert_eq!(lists[0].furniture.len(), 100);
+        assert_eq!(lists[5].furniture.len(), 98);
+    }
+
+    #[test]
+    fn indoor_furniture_list_tail_is_deferred_until_remodel_gate() {
+        assert_eq!(initial_housing_furniture_list_count(true, 6), 3);
+        assert_eq!(deferred_housing_furniture_list_start_index(true, 6), 3);
+        assert_eq!(initial_housing_furniture_list_count(true, 3), 3);
+        assert_eq!(deferred_housing_furniture_list_start_index(true, 3), 3);
+        assert_eq!(initial_housing_furniture_list_count(false, 8), 8);
+        assert_eq!(deferred_housing_furniture_list_start_index(false, 8), 8);
+    }
+
+    #[test]
+    fn housing_interior_ready_primary_id_matches_retail_halves() {
+        let id = HouseId::from_u64(0x003d_0153_0014_0001);
+
+        assert_eq!(housing_interior_ready_primary_id(id), 0x0014_0001_003d_0153);
+    }
+
+    #[test]
+    fn finish_loading_defers_only_for_pending_indoor_tail() {
+        assert!(should_defer_housing_indoor_finish_loading(
+            TerritoryIntendedUse::HousingIndoor,
+            true
+        ));
+        assert!(!should_defer_housing_indoor_finish_loading(
+            TerritoryIntendedUse::HousingIndoor,
+            false
+        ));
+        assert!(!should_defer_housing_indoor_finish_loading(
+            TerritoryIntendedUse::HousingOutdoor,
+            true
+        ));
+    }
+
+    #[test]
+    fn housing_object_data_value_sets_use_flat_indoor_furniture_slots() {
+        let mut first = furniture_row(111, Position::default(), 0.0);
+        first.container_type = ContainerType::HousingInteriorPlacedItems1 as i32;
+        first.slot = 4;
+
+        let mut second_page = furniture_row(222, Position::default(), 0.0);
+        second_page.container_type = ContainerType::HousingInteriorPlacedItems2 as i32;
+        second_page.slot = 2;
+
+        let value_sets = housing_object_data_value_sets_from_rows(&[first, second_page]);
+
+        assert_eq!(value_sets.len(), 2);
+        assert_eq!(value_sets[0].furniture_index, 4);
+        assert_eq!(value_sets[1].furniture_index, 52);
+        assert!(
+            value_sets
+                .iter()
+                .all(|value_set| value_set.value_count == 0)
+        );
+    }
+
+    #[test]
+    fn indoor_furniture_object_overlays_sync_before_finish_zoning() {
+        assert!(
+            should_sync_housing_indoor_furniture_object_overlays_after_remodel_gate(
+                TerritoryIntendedUse::HousingIndoor,
+                true,
+                true
+            )
+        );
+        assert!(
+            !should_sync_housing_indoor_furniture_object_overlays_after_remodel_gate(
+                TerritoryIntendedUse::HousingIndoor,
+                false,
+                true
+            )
+        );
+        assert!(
+            !should_sync_housing_indoor_furniture_object_overlays_after_remodel_gate(
+                TerritoryIntendedUse::HousingIndoor,
+                true,
+                false
+            )
+        );
+        assert!(
+            should_sync_housing_indoor_furniture_object_overlays_after_loading_gate(
+                TerritoryIntendedUse::HousingIndoor,
+                false,
+                true
+            )
+        );
+        assert!(
+            !should_sync_housing_indoor_furniture_object_overlays_after_loading_gate(
+                TerritoryIntendedUse::HousingIndoor,
+                true,
+                true
+            )
+        );
+        assert!(
+            !should_sync_housing_indoor_furniture_object_overlays_after_remodel_gate(
+                TerritoryIntendedUse::HousingOutdoor,
+                true,
+                true
+            )
+        );
+        assert!(
+            !should_sync_housing_indoor_furniture_object_overlays_on_finish_zoning(
+                TerritoryIntendedUse::HousingIndoor,
+                false
+            )
+        );
+        assert!(
+            !should_sync_housing_indoor_furniture_object_overlays_on_finish_zoning(
+                TerritoryIntendedUse::HousingIndoor,
+                true
+            )
+        );
+        assert!(
+            !should_sync_housing_indoor_furniture_object_overlays_on_finish_zoning(
+                TerritoryIntendedUse::HousingOutdoor,
+                true
+            )
+        );
+    }
+
+    #[test]
+    fn outdoor_furniture_object_overlays_do_not_use_indoor_loading_gate() {
+        assert!(
+            !should_sync_housing_indoor_furniture_object_overlays_after_loading_gate(
+                TerritoryIntendedUse::HousingOutdoor,
+                false,
+                true
+            )
+        );
+        assert!(
+            !should_sync_housing_indoor_furniture_object_overlays_on_finish_zoning(
+                TerritoryIntendedUse::HousingIndoor,
+                false
+            )
+        );
+    }
+
+    #[test]
     fn build_furniture_lists_marks_outdoor_lists() {
         let id = house_id(4, 0, false);
 
-        let lists = build_furniture_lists(id, &[], false);
+        let lists = build_furniture_lists(id, &[], false, None);
 
         assert_eq!(lists[0].unk2, 0);
     }
@@ -4254,7 +4859,7 @@ mod tests {
         assert!(is_interior_placed_furniture_row(&indoor));
 
         let mut last_indoor_page = furniture_row(222, Position::default(), 0.0);
-        last_indoor_page.container_type = ContainerType::HousingInteriorPlacedItems8 as i32;
+        last_indoor_page.container_type = ContainerType::HousingInteriorPlacedItems12 as i32;
         assert!(is_interior_placed_furniture_row(&last_indoor_page));
 
         let mut exterior = furniture_row(333, Position::default(), 0.0);
@@ -4285,6 +4890,36 @@ mod tests {
 
         assert!(housing_furniture_object_from_row(&interior, true, 0).is_some());
         assert!(housing_furniture_object_from_row(&interior, false, 5).is_none());
+    }
+
+    #[test]
+    fn housing_furniture_objects_from_rows_keeps_only_matching_placed_area() {
+        let mut interior = furniture_row(654, Position::default(), 1.0);
+        interior.container_type = ContainerType::HousingInteriorPlacedItems1 as i32;
+        interior.slot = 3;
+
+        let mut exterior = furniture_row(321, Position::default(), 0.5);
+        exterior.container_type = ContainerType::HousingExteriorPlacedItems as i32;
+        exterior.slot = 5;
+
+        let mut storeroom = furniture_row(111, Position::default(), 0.0);
+        storeroom.container_type = ContainerType::HousingInteriorStoreroom1 as i32;
+        storeroom.slot = 8;
+
+        let mut unplaced = interior.clone();
+        unplaced.placed = false;
+
+        let rows = vec![interior, exterior, storeroom, unplaced];
+        let indoor_objects = housing_furniture_objects_from_rows(&rows, true, 0);
+        let outdoor_objects = housing_furniture_objects_from_rows(&rows, false, 5);
+
+        assert_eq!(indoor_objects.len(), 1);
+        assert_eq!(indoor_objects[0].slot, 3);
+        assert!(indoor_objects[0].indoors);
+        assert_eq!(outdoor_objects.len(), 1);
+        assert_eq!(outdoor_objects[0].slot, 5);
+        assert!(!outdoor_objects[0].indoors);
+        assert_eq!(outdoor_objects[0].plot_index, 5);
     }
 
     #[test]
@@ -4413,7 +5048,8 @@ mod tests {
             },
             HousingFurniture {
                 container_type: ContainerType::HousingInteriorPlacedItems1 as i32,
-                slot: MAX_LARGE_STORAGE as i32,
+                slot: housing_container_slot_capacity(ContainerType::HousingInteriorPlacedItems1)
+                    as i32,
                 item_id: 1001,
                 ..Default::default()
             },
@@ -4756,7 +5392,7 @@ mod tests {
 
     #[test]
     fn placed_container_for_flat_slot_rejects_out_of_range_slots() {
-        assert_eq!(placed_container_for_flat_slot(400, true), None);
+        assert_eq!(placed_container_for_flat_slot(600, true), None);
         assert_eq!(placed_container_for_flat_slot(50, false), None);
     }
 
@@ -4779,6 +5415,30 @@ mod tests {
         let rotation = housing_outdoor_exit_rotation(&estate(house_id(5, 0, false), 0x0B, false));
 
         assert_eq!(rotation, 0.0);
+    }
+
+    #[test]
+    fn housing_indoor_login_exit_location_moves_house_to_outdoor_front_door() {
+        let mut house = estate(house_id(5, 0, false), 0x0B, false);
+        house.territory_type_id = 340;
+
+        let location =
+            housing_indoor_login_exit_location(TerritoryIntendedUse::HousingIndoor, Some(&house))
+                .expect("housing indoor login should be normalized to the outside of the house");
+
+        assert_eq!(location.zone_id, 340);
+        assert_eq!(location.position, Position(Vec3::new(137.022, 23.5, -0.83)));
+        assert_eq!(location.rotation, 0.0);
+    }
+
+    #[test]
+    fn housing_indoor_login_exit_location_leaves_non_housing_indoor_zone_alone() {
+        let house = estate(house_id(5, 0, false), 0x0B, false);
+
+        assert_eq!(
+            housing_indoor_login_exit_location(TerritoryIntendedUse::HousingOutdoor, Some(&house)),
+            None
+        );
     }
 
     #[test]
@@ -5926,7 +6586,7 @@ mod tests {
             ContainerType::HousingInteriorPlacedItems1
         ));
         assert!(should_broadcast_housing_item_removal(
-            ContainerType::HousingInteriorPlacedItems8
+            ContainerType::HousingInteriorPlacedItems12
         ));
         assert!(!should_broadcast_housing_item_removal(
             ContainerType::HousingExteriorStoreroom
@@ -6349,6 +7009,45 @@ mod tests {
         assert_eq!(
             simple_housing_indoor_territory_type_id(PlotSize::Large),
             1251
+        );
+    }
+
+    #[test]
+    fn original_house_interior_territory_matches_retail_district_and_plot_size() {
+        assert_eq!(
+            original_housing_indoor_territory_type_id(340, PlotSize::Large),
+            Some(344)
+        );
+        assert_eq!(
+            original_housing_indoor_territory_type_id(340, PlotSize::Medium),
+            Some(343)
+        );
+        assert_eq!(
+            original_housing_indoor_territory_type_id(340, PlotSize::Small),
+            Some(342)
+        );
+    }
+
+    #[test]
+    fn default_house_entry_territory_uses_original_district_when_no_pattern_is_saved() {
+        let estate = ward_estate(5, 0, TEST_HOUSING_LAND_FLAGS);
+
+        assert_eq!(
+            housing_default_indoor_entry_territory_type_id_for_estate(&estate),
+            344
+        );
+    }
+
+    #[test]
+    fn persisted_simple_interior_pattern_row_keeps_simple_territory() {
+        let mut estate = ward_estate(5, 0, TEST_HOUSING_LAND_FLAGS);
+        estate.plot_size = PlotSize::Large as i32;
+        estate.interior_json = update_interior_json_renovation_row_id("{}", 18)
+            .expect("interior pattern row should serialize");
+
+        assert_eq!(
+            housing_interior_renovation_row_id_from_json(&estate.interior_json),
+            Some(18)
         );
     }
 }

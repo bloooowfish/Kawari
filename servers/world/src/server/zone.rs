@@ -1438,14 +1438,21 @@ pub fn handle_zone_messages(
             let mut network = network.lock();
 
             let Some(instance) = data.find_actor_instance_mut(*from_actor_id) else {
+                tracing::warn!(
+                    from_actor_id = from_actor_id.0,
+                    object_count = objects.len(),
+                    "Skipping persisted housing furniture object overlays because actor instance was not found"
+                );
                 return true;
             };
 
-            tracing::info!(
+            tracing::warn!(
                 from_actor_id = from_actor_id.0,
                 object_count = objects.len(),
                 "Syncing persisted housing furniture object overlays"
             );
+            let mut upserted_count = 0usize;
+            let mut spawn_message_count = 0usize;
             for object in objects {
                 let striking_dummy_data = (!object.indoors)
                     .then(|| game_data.get_housing_striking_dummy_npc_data(object.catalog_id))
@@ -1453,7 +1460,7 @@ pub fn handle_zone_messages(
                 let interactable = striking_dummy_data.is_some()
                     || game_data
                         .is_housing_furniture_interactable(object.catalog_id, object.indoors);
-                tracing::info!(
+                tracing::debug!(
                     from_actor_id = from_actor_id.0,
                     slot = object.slot,
                     catalog_id = object.catalog_id,
@@ -1469,13 +1476,22 @@ pub fn handle_zone_messages(
                     interactable,
                     striking_dummy_data.as_ref(),
                 ) {
-                    spawn_housing_furniture_object_for_current_clients(
+                    upserted_count += 1;
+                    spawn_message_count += spawn_housing_furniture_object_for_current_clients(
                         instance,
                         &mut network,
                         housing_actor_id,
                     );
                 }
             }
+            tracing::warn!(
+                from_actor_id = from_actor_id.0,
+                object_count = objects.len(),
+                upserted_count,
+                spawn_message_count,
+                client_count = network.clients.len(),
+                "Finished persisted housing furniture object overlay sync"
+            );
 
             true
         }
@@ -1493,7 +1509,7 @@ pub fn handle_zone_messages(
                 .flatten();
             let interactable = striking_dummy_data.is_some()
                 || game_data.is_housing_furniture_interactable(object.catalog_id, object.indoors);
-            tracing::info!(
+            tracing::debug!(
                 from_actor_id = from_actor_id.0,
                 slot = object.slot,
                 catalog_id = object.catalog_id,

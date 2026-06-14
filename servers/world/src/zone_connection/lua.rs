@@ -3,6 +3,10 @@
 use super::housing::{
     update_exterior_json_color, update_exterior_json_field, update_interior_json_field,
 };
+use super::remake_place::{
+    build_remake_place_furniture_rows, parse_remake_place_layout_file,
+    resolve_remake_place_preset_path,
+};
 use crate::{
     Event, HousingEstate, HousingEstateSpec, ItemInfoQuery, MAX_APARTMENT_ROOM_NUMBER, ToServer,
     WorldDatabase, ZoneConnection,
@@ -10,7 +14,7 @@ use crate::{
     inventory::{CrystalsStorage, CurrencyStorage, Item},
     lua::{
         HousingEstateKind, HousingExteriorColorField, HousingExteriorField, HousingInteriorField,
-        HousingKit, HousingResetMode, LuaPlayer, LuaTask,
+        HousingKit, HousingPresetScope, HousingResetMode, LuaPlayer, LuaTask,
     },
 };
 use kawari::{
@@ -602,6 +606,18 @@ impl ZoneConnection {
                     } else {
                         self.send_notice("No local housing estate found to update.")
                             .await;
+                    }
+                }
+                LuaTask::ApplyHousingPreset { path, scope } => {
+                    let Some(estate) = self.current_or_owned_housing_estate() else {
+                        self.send_notice("No local housing estate found to apply the preset.")
+                            .await;
+                        continue;
+                    };
+
+                    match apply_remake_place_preset_to_estate(self, &estate, path, *scope).await {
+                        Ok(summary) => self.send_notice(&summary).await,
+                        Err(error) => self.send_notice(&error).await,
                     }
                 }
                 LuaTask::GiveHousingKit { kit } => {
@@ -1258,6 +1274,66 @@ fn housing_kit_items(kit: HousingKit) -> &'static [u32] {
         HousingKit::Indoor => &[6514, 6607, 6635, 6657, 6674, 6578, 7064],
         HousingKit::Outdoor => &[6475, 6484, 6486, 6490, 7128, 7118, 12113],
         HousingKit::Npc => &[7064, 23846, 9748, 9749],
+    }
+}
+
+async fn apply_remake_place_preset_to_estate(
+    connection: &mut ZoneConnection,
+    estate: &HousingEstate,
+    path: &str,
+    scope: HousingPresetScope,
+) -> Result<String, String> {
+    let preset_path = resolve_remake_place_preset_path(path)?;
+    let layout = parse_remake_place_layout_file(&preset_path.path)?;
+    let created_by_content_id = Some(connection.player_data.character.content_id as i64);
+    let import_rows = {
+        let game_data = connection.gamedata.lock();
+        build_remake_place_furniture_rows(
+            &layout,
+            estate.land_ident,
+            created_by_content_id,
+            |item_id| game_data.get_furniture_catalog_id(item_id),
+            |rgb| game_data.get_closest_housing_stain(rgb),
+            scope,
+        )
+    };
+
+    let deleted = {
+        let mut database = connection.database.lock();
+        database
+            .replace_housing_placed_furniture_for_estate(
+                estate.land_ident,
+                scope.includes_interior(),
+                scope.includes_exterior(),
+                &import_rows.rows,
+            )
+            .map_err(|error| format!("Unable to apply ReMakePlace preset to database: {error}"))?
+    };
+    connection.clear_housing_furniture_reset_cache();
+
+    Ok(format!(
+        "Applied ReMakePlace preset {} to {} ({}): indoor={} outdoor={} replaced={} skipped missing_item={} missing_catalog={} capacity={}. Re-enter the estate/ward to refresh visuals.",
+        preset_path
+            .path
+            .strip_prefix(&preset_path.root)
+            .unwrap_or(&preset_path.path)
+            .display(),
+        estate.estate_name,
+        housing_preset_scope_label(scope),
+        import_rows.indoor_imported,
+        import_rows.outdoor_imported,
+        deleted,
+        import_rows.skipped_missing_item_id,
+        import_rows.skipped_missing_catalog,
+        import_rows.skipped_capacity,
+    ))
+}
+
+fn housing_preset_scope_label(scope: HousingPresetScope) -> &'static str {
+    match scope {
+        HousingPresetScope::All => "all",
+        HousingPresetScope::Interior => "interior",
+        HousingPresetScope::Exterior => "exterior",
     }
 }
 

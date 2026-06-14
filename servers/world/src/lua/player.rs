@@ -21,7 +21,8 @@ use kawari::{
 use super::housing_placard_location_from_event_arg;
 use super::{
     HousingEstateKind, HousingExteriorColorField, HousingExteriorField, HousingInteriorField,
-    HousingKit, HousingResetMode, LuaTask, LuaZone, QueueSegments, create_ipc_self,
+    HousingKit, HousingPresetScope, HousingResetMode, LuaTask, LuaZone, QueueSegments,
+    create_ipc_self,
 };
 
 #[derive(Default, Clone, Copy)]
@@ -306,6 +307,11 @@ impl LuaPlayer {
     fn update_housing_interior(&mut self, field: HousingInteriorField, value: u32) {
         self.queued_tasks
             .push(LuaTask::UpdateHousingInterior { field, value });
+    }
+
+    fn apply_housing_preset(&mut self, path: String, scope: HousingPresetScope) {
+        self.queued_tasks
+            .push(LuaTask::ApplyHousingPreset { path, scope });
     }
 
     fn give_housing_kit(&mut self, kit: HousingKit) {
@@ -946,6 +952,13 @@ impl UserData for LuaPlayer {
                 Ok(())
             },
         );
+        methods.add_method_mut(
+            "apply_housing_preset",
+            |_, this, (path, scope): (String, String)| {
+                this.apply_housing_preset(path, parse_housing_preset_scope(&scope)?);
+                Ok(())
+            },
+        );
         methods.add_method_mut("give_housing_kit", |_, this, kit: String| {
             this.give_housing_kit(parse_housing_kit(&kit)?);
             Ok(())
@@ -1358,6 +1371,17 @@ fn parse_housing_kit(value: &str) -> mlua::Result<HousingKit> {
     }
 }
 
+fn parse_housing_preset_scope(value: &str) -> mlua::Result<HousingPresetScope> {
+    match value.to_ascii_lowercase().as_str() {
+        "" | "all" => Ok(HousingPresetScope::All),
+        "interior" | "indoor" => Ok(HousingPresetScope::Interior),
+        "exterior" | "outdoor" => Ok(HousingPresetScope::Exterior),
+        _ => Err(mlua::Error::external(format!(
+            "invalid housing preset scope: {value}"
+        ))),
+    }
+}
+
 fn parse_housing_exterior_field(value: &str) -> mlua::Result<HousingExteriorField> {
     match value.to_ascii_lowercase().as_str() {
         "roof" => Ok(HousingExteriorField::Roof),
@@ -1434,7 +1458,7 @@ mod tests {
     use super::*;
     use crate::lua::{
         HousingEstateKind, HousingExteriorColorField, HousingExteriorField, HousingInteriorField,
-        HousingKit, HousingResetMode,
+        HousingKit, HousingPresetScope, HousingResetMode,
     };
 
     #[test]
@@ -1486,6 +1510,46 @@ mod tests {
                 assert_eq!(*ward_index, 2);
                 assert_eq!(*division, 0);
                 assert_eq!(*plot_index, 12);
+            }
+            other => panic!("unexpected tasks: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn housing_lua_preset_command_queues_scope_and_path_with_spaces() {
+        let lua = mlua::Lua::new();
+        lua.globals().set("GM_RANK_DEBUG", 1).unwrap();
+        lua.globals()
+            .set(
+                "printf",
+                lua.create_function(|_, _: mlua::MultiValue| Ok(()))
+                    .unwrap(),
+            )
+            .unwrap();
+        lua.load(include_str!(
+            "../../../../resources/scripts/commands/gm/Housing.lua"
+        ))
+        .exec()
+        .unwrap();
+
+        let player = lua.create_userdata(LuaPlayer::default()).unwrap();
+        let args = lua.create_table().unwrap();
+        args.set(1, "preset").unwrap();
+        args.set(2, "interior").unwrap();
+        args.set(3, "CAFE").unwrap();
+        args.set(4, "CAT").unwrap();
+        args.set(5, "WALK").unwrap();
+
+        let on_command: Function = lua.globals().get("onCommand").unwrap();
+        on_command
+            .call::<()>((player.clone(), args, "housing"))
+            .unwrap();
+
+        let player = player.borrow::<LuaPlayer>().unwrap();
+        match player.queued_tasks.as_slice() {
+            [LuaTask::ApplyHousingPreset { path, scope }] => {
+                assert_eq!(path, "CAFE CAT WALK");
+                assert_eq!(*scope, HousingPresetScope::Interior);
             }
             other => panic!("unexpected tasks: {other:?}"),
         }

@@ -788,6 +788,15 @@ pub enum ActorControlCategory {
         unk4: u32,
     },
 
+    /// The server confirms the active housing interior identity after the client passes the
+    /// remodeling gate during indoor zone-in.
+    #[brw(magic = 1010u32)]
+    HousingInteriorReady {
+        primary_id: u64,
+        secondary_id: u64,
+        unk1: u32,
+    },
+
     /// The server acknowledges the client's request to place an item. Doesn't seem to have any values, but we should keep unknowns for now, just in case...
     #[brw(magic = 1011u32)]
     FurniturePlacedAck {
@@ -1149,6 +1158,28 @@ mod tests {
         let bytes = buffer.into_inner();
         assert_eq!(bytes.len(), 40);
         assert_eq!(&bytes[0..4], &0x03EDu32.to_le_bytes());
+    }
+
+    #[test]
+    fn housing_interior_ready_writes_retail_category_and_params() {
+        let mut buffer = Cursor::new(Vec::new());
+        ActorControlSelf {
+            category: ActorControlCategory::HousingInteriorReady {
+                primary_id: 0x0014_0001_003d_0153,
+                secondary_id: 0x0185_813a_0000_000c,
+                unk1: 0,
+            },
+        }
+        .write_le(&mut buffer)
+        .unwrap();
+
+        let bytes = buffer.into_inner();
+        assert_eq!(bytes.len(), 40);
+        assert_eq!(&bytes[0..4], &1010u32.to_le_bytes());
+        assert_eq!(&bytes[4..12], &0x0014_0001_003d_0153u64.to_le_bytes());
+        assert_eq!(&bytes[12..20], &0x0185_813a_0000_000cu64.to_le_bytes());
+        assert_eq!(&bytes[20..24], &0u32.to_le_bytes());
+        assert!(bytes[24..].iter().all(|byte| *byte == 0));
     }
 
     #[test]

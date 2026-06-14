@@ -2,7 +2,7 @@
 
 use crate::{
     ItemInfoQuery, ToServer, ZoneConnection,
-    inventory::{DesiredHousingInventoryPages, EQUIP_RESTRICTED, Storage},
+    inventory::{DesiredHousingInventoryPages, EQUIP_RESTRICTED, GenericStorage, Storage},
 };
 use kawari::{
     common::{ContainerType, ItemOperationKind, LegacyEquipmentModelId, ObjectId, WeaponModelId},
@@ -75,25 +75,32 @@ impl ZoneConnection {
     }
 
     pub async fn send_housing_inventory(&mut self, which: DesiredHousingInventoryPages) {
-        let cloned_inv = match which {
+        match which {
             DesiredHousingInventoryPages::Interior => {
-                self.player_data.house_inventory.interior.clone()
+                let cloned_inv = self.player_data.house_inventory.interior.clone();
+                self.send_housing_containers(cloned_inv).await;
             }
             DesiredHousingInventoryPages::InteriorStoreroom => {
-                self.player_data.house_inventory.interior_storeroom.clone()
+                let cloned_inv = self.player_data.house_inventory.interior_storeroom.clone();
+                self.send_housing_containers(cloned_inv).await;
             }
             DesiredHousingInventoryPages::Exterior => {
-                self.player_data.house_inventory.exterior.clone()
+                let cloned_inv = self.player_data.house_inventory.exterior.clone();
+                self.send_housing_containers(cloned_inv).await;
             }
             DesiredHousingInventoryPages::ExteriorStoreroom => {
-                self.player_data.house_inventory.exterior_storeroom.clone()
+                let cloned_inv = self.player_data.house_inventory.exterior_storeroom.clone();
+                self.send_housing_containers(cloned_inv).await;
             }
-            DesiredHousingInventoryPages::None => {
-                return;
-            }
-        };
+            DesiredHousingInventoryPages::None => {}
+        }
+    }
 
-        for container in cloned_inv.into_iter() {
+    async fn send_housing_containers<const N: usize>(
+        &mut self,
+        containers: Vec<GenericStorage<N>>,
+    ) {
+        for container in containers {
             self.send_container(&container, container.kind).await;
         }
     }

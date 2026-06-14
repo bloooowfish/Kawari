@@ -21,7 +21,8 @@ pub struct SpawnObject {
     /// What kind of object this is.
     pub kind: ObjectKind,
     /// Retail targetability/status byte for spawned objects. Current captures show
-    /// EventObj uses 0x02 when targetable and HousingEventObject uses 0x04.
+    /// EventObj uses 0x02 when targetable. HousingEventObject overlays observed in
+    /// indoor housing use 0x00.
     pub targetable_status: u8,
     pub event_state: u8,
     /// If this is an ENPC, represents an index into the EObj Excel sheet.

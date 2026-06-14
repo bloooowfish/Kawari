@@ -233,6 +233,9 @@ async fn initial_setup(
                     active_housing_ward_context: None,
                     display_housing_ward_context: None,
                     pending_housing_appearance_item_operation: None,
+                    pending_housing_indoor_furniture_list_tail: false,
+                    pending_housing_indoor_finish_loading: false,
+                    pending_housing_indoor_furniture_object_overlay_sync: false,
                     obsfucation_data: ObsfucationData::default(),
                     queued_content: None,
                     conditions: Conditions::default(),
@@ -600,6 +603,49 @@ async fn client_server_loop(
             break;
         };
     }
+}
+
+async fn complete_client_finish_loading(connection: &mut ZoneConnection) {
+    let spawn = connection.respawn_player(true).await;
+
+    // tell the server we loaded into the zone, so it can start sending us actors
+    connection
+        .handle
+        .send(ToServer::ZoneLoaded(
+            connection.id,
+            connection.player_data.character.actor_id,
+            spawn.clone(),
+        ))
+        .await;
+
+    // If we're in a party, we need to tell the other members we changed areas or reconnected.
+    if connection.is_in_party() {
+        if !connection.rejoining_party {
+            connection
+                .handle
+                .send(ToServer::PartyMemberChangedAreas(
+                    connection.party_id,
+                    connection.player_data.character.service_account_id as u64,
+                    connection.player_data.character.content_id as u64,
+                    connection.player_data.character.actor_id,
+                    connection.player_data.character.name.clone(),
+                    connection.player_data.volatile.zone_id,
+                ))
+                .await;
+        } else {
+            connection
+                .handle
+                .send(ToServer::PartyMemberReturned(
+                    connection.player_data.character.actor_id,
+                    connection.player_data.volatile.zone_id,
+                    connection.party_id,
+                ))
+                .await;
+            connection.rejoining_party = false;
+        }
+    }
+
+    connection.send_stats().await;
 }
 
 /// Process packets from the client. Returns false if we want to kill the connection.
@@ -995,47 +1041,35 @@ async fn process_packet(
                                 .await;
                         }
                         ClientZoneIpcData::FinishLoading { .. } => {
-                            let spawn = connection.respawn_player(true).await;
-
-                            // tell the server we loaded into the zone, so it can start sending us actors
-                            connection
-                                .handle
-                                .send(ToServer::ZoneLoaded(
-                                    connection.id,
-                                    connection.player_data.character.actor_id,
-                                    spawn.clone(),
-                                ))
-                                .await;
-
-                            // If we're in a party, we need to tell the other members we changed areas or reconnected.
-                            if connection.is_in_party() {
-                                if !connection.rejoining_party {
-                                    connection
-                                        .handle
-                                        .send(ToServer::PartyMemberChangedAreas(
-                                            connection.party_id,
-                                            connection.player_data.character.service_account_id
-                                                as u64,
-                                            connection.player_data.character.content_id as u64,
-                                            connection.player_data.character.actor_id,
-                                            connection.player_data.character.name.clone(),
-                                            connection.player_data.volatile.zone_id,
-                                        ))
-                                        .await;
-                                } else {
-                                    connection
-                                        .handle
-                                        .send(ToServer::PartyMemberReturned(
-                                            connection.player_data.character.actor_id,
-                                            connection.player_data.volatile.zone_id,
-                                            connection.party_id,
-                                        ))
-                                        .await;
-                                    connection.rejoining_party = false;
-                                }
+                            let intended_use = connection.get_zone_intended_use();
+                            tracing::warn!(
+                                content_id = connection.player_data.character.content_id,
+                                zone_id = connection.player_data.volatile.zone_id,
+                                intended_use = intended_use as u8,
+                                pending_tail =
+                                    connection.pending_housing_indoor_furniture_list_tail,
+                                pending_finish_loading =
+                                    connection.pending_housing_indoor_finish_loading,
+                                pending_overlay_sync =
+                                    connection.pending_housing_indoor_furniture_object_overlay_sync,
+                                "Client sent FinishLoading"
+                            );
+                            if connection.should_defer_housing_indoor_finish_loading(intended_use) {
+                                connection.pending_housing_indoor_finish_loading = true;
+                                tracing::debug!(
+                                    content_id = connection.player_data.character.content_id,
+                                    zone_id = connection.player_data.volatile.zone_id,
+                                    "Deferring indoor housing FinishLoading completion until remodel gate"
+                                );
+                            } else {
+                                complete_client_finish_loading(connection).await;
+                                connection
+                                    .sync_pending_housing_indoor_furniture_object_overlays_after_loading_gate(
+                                        intended_use,
+                                        "finish_loading",
+                                    )
+                                    .await;
                             }
-
-                            connection.send_stats().await;
                         }
                         ClientZoneIpcData::ClientTrigger(trigger) => {
                             let trace_intended_use = connection.get_zone_intended_use();
@@ -1064,6 +1098,19 @@ async fn process_packet(
                                     connection.send_ipc_self(ipc).await;
                                 }
                                 ClientTriggerCommand::FinishZoning {} => {
+                                    let intended_use = connection.get_zone_intended_use();
+                                    tracing::warn!(
+                                        content_id = connection.player_data.character.content_id,
+                                        zone_id = connection.player_data.volatile.zone_id,
+                                        intended_use = intended_use as u8,
+                                        pending_tail =
+                                            connection.pending_housing_indoor_furniture_list_tail,
+                                        pending_finish_loading =
+                                            connection.pending_housing_indoor_finish_loading,
+                                        pending_overlay_sync = connection
+                                            .pending_housing_indoor_furniture_object_overlay_sync,
+                                        "Client sent FinishZoning"
+                                    );
                                     connection
                                         .handle
                                         .send(ToServer::ZoneIn(
@@ -1075,6 +1122,12 @@ async fn process_packet(
 
                                     // Reset so it doesn't get stuck to Aetheryte:
                                     connection.teleport_reason = TeleportReason::NotSpecified;
+
+                                    connection
+                                        .sync_housing_furniture_object_overlays_after_zone_in(
+                                            intended_use,
+                                        )
+                                        .await;
                                 }
                                 ClientTriggerCommand::BeginContentsReplay {} => {
                                     connection
@@ -1795,6 +1848,19 @@ async fn process_packet(
                                 }
                                 ClientTriggerCommand::FinishEstateRemodel { mode } => {
                                     let intended_use = connection.get_zone_intended_use();
+                                    tracing::warn!(
+                                        content_id = connection.player_data.character.content_id,
+                                        zone_id = connection.player_data.volatile.zone_id,
+                                        intended_use = intended_use as u8,
+                                        mode,
+                                        pending_tail =
+                                            connection.pending_housing_indoor_furniture_list_tail,
+                                        pending_finish_loading =
+                                            connection.pending_housing_indoor_finish_loading,
+                                        pending_overlay_sync = connection
+                                            .pending_housing_indoor_furniture_object_overlay_sync,
+                                        "Client sent FinishEstateRemodel"
+                                    );
                                     if !connection.in_housing_area(intended_use) {
                                         continue;
                                     }
@@ -1840,15 +1906,43 @@ async fn process_packet(
                                             .commit_classjob_and_inventory(&connection.player_data);
                                     }
 
+                                    let tail_sent = if !apply {
+                                        connection
+                                            .send_pending_housing_indoor_furniture_list_tail_after_remodel_gate(
+                                            )
+                                            .await
+                                    } else {
+                                        false
+                                    };
+
+                                    if apply || !tail_sent {
+                                        connection
+                                            .actor_control_self(
+                                                ActorControlCategory::FinishEstateAppearanceRemodel {},
+                                            )
+                                            .await;
+                                        connection.conditions.remove_condition(
+                                            kawari::ipc::zone::Condition::UsingHousingFunctions,
+                                        );
+                                        connection.send_conditions().await;
+                                    }
+
+                                    if connection.pending_housing_indoor_finish_loading {
+                                        connection.pending_housing_indoor_finish_loading = false;
+                                        tracing::debug!(
+                                            content_id =
+                                                connection.player_data.character.content_id,
+                                            zone_id = connection.player_data.volatile.zone_id,
+                                            "Completing deferred housing indoor FinishLoading after remodel gate"
+                                        );
+                                        complete_client_finish_loading(connection).await;
+                                    }
                                     connection
-                                        .actor_control_self(
-                                            ActorControlCategory::FinishEstateAppearanceRemodel {},
+                                        .sync_pending_housing_indoor_furniture_object_overlays_after_remodel_gate(
+                                            intended_use,
+                                            tail_sent,
                                         )
                                         .await;
-                                    connection.conditions.remove_condition(
-                                        kawari::ipc::zone::Condition::UsingHousingFunctions,
-                                    );
-                                    connection.send_conditions().await;
 
                                     if let Some(operation) = applied_appearance_operation {
                                         connection
@@ -2037,7 +2131,7 @@ async fn process_packet(
                                     let catalog_id;
                                     let stain;
                                     {
-                                        let mut gamedata = connection.gamedata.lock();
+                                        let gamedata = connection.gamedata.lock();
                                         let Some(the_item) = connection
                                             .player_data
                                             .house_inventory

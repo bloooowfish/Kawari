@@ -75,6 +75,7 @@ local function usage(player)
     printf(player, "       !housing exterior color <field> <stain>")
     printf(player, "       !housing interior <field> <value>")
     printf(player, "       !housing interior preset capture_shirogane_medium_mist_style")
+    printf(player, "       !housing preset [all|interior|exterior] <ReMakePlace json path or preset name>")
     printf(player, "       !housing givekit indoor|outdoor|npc")
 end
 
@@ -143,6 +144,11 @@ local function parse_non_negative_integer(value, maximum)
     end
 
     return parsed
+end
+
+local function is_preset_scope(value)
+    value = lower(value)
+    return value == "all" or value == "interior" or value == "indoor" or value == "exterior" or value == "outdoor"
 end
 
 function onCommand(player, args, name)
@@ -309,6 +315,27 @@ function onCommand(player, args, name)
 
         player:update_housing_interior(field, value)
         printf(player, "Queued housing interior update: %s=%d.", field, value)
+        return
+    end
+
+    if subcommand == "preset" then
+        local scope = "all"
+        local path_start_index = 2
+
+        if is_preset_scope(args[2]) then
+            scope = args[2]
+            path_start_index = 3
+        end
+
+        local preset_path = join_args(args, path_start_index)
+
+        if preset_path == "" then
+            usage(player)
+            return
+        end
+
+        player:apply_housing_preset(preset_path, scope)
+        printf(player, "Queued ReMakePlace housing preset: %s (%s).", preset_path, scope)
         return
     end
 

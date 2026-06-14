@@ -22,6 +22,23 @@ pub enum HousingResetMode {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HousingPresetScope {
+    All,
+    Interior,
+    Exterior,
+}
+
+impl HousingPresetScope {
+    pub fn includes_interior(self) -> bool {
+        matches!(self, Self::All | Self::Interior)
+    }
+
+    pub fn includes_exterior(self) -> bool {
+        matches!(self, Self::All | Self::Exterior)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HousingKit {
     Indoor,
     Outdoor,
@@ -167,6 +184,10 @@ pub enum LuaTask {
     UpdateHousingInterior {
         field: HousingInteriorField,
         value: u32,
+    },
+    ApplyHousingPreset {
+        path: String,
+        scope: HousingPresetScope,
     },
     GiveHousingKit {
         kit: HousingKit,

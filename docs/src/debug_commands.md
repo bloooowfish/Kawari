@@ -16,7 +16,7 @@ These special debug commands start with `!` and are custom to Kawari.
 | `!festival <id1> <id2> <id3> <id4>` | Sets the festival in the current zone. Multiple festivals can be set together to create interesting effects. |
 | `!finishevent` | Forcefully finishes the current event, useful if the script has an error and you're stuck talking to something. |
 | `!gate` | Spawns a non-functional debug GATE. |
-| `!housing testhouse [personal|fc] [small|medium|large] [territory_id] [ward] [plot]` | Creates or refreshes a local test estate. Also supports `enter`, `exit`, `info`, `reset furniture|estate|all`, `light <0-5>`, `greeting <text>`, `name <text>`, `exterior <field> <value>`, `exterior color <field> <stain>`, `interior <field> <value>`, `interior preset capture_shirogane_medium_mist_style`, and `givekit indoor|outdoor|npc`. |
+| `!housing testhouse [personal|fc] [small|medium|large] [territory_id] [ward] [plot]` | Creates or refreshes a local test estate. Also supports `enter`, `exit`, `info`, `reset furniture|estate|all`, `light <0-5>`, `greeting <text>`, `name <text>`, `exterior <field> <value>`, `exterior color <field> <stain>`, `interior <field> <value>`, `interior preset capture_shirogane_medium_mist_style`, `preset [all|interior|exterior] <ReMakePlace json path or preset name>`, and `givekit indoor|outdoor|npc`. |
 | `!item <name>` | Gives you an item matching by name. |
 | `!inspect` | Prints info about the player. |
 | `!itemlevel <level>` | Temporarily set your own item level. |

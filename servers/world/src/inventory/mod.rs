@@ -38,6 +38,9 @@ use physis::TerritoryIntendedUse;
 
 const MAX_NORMAL_STORAGE: usize = 35;
 pub const MAX_LARGE_STORAGE: usize = 50;
+pub const MAX_HOUSING_INTERIOR_STORAGE: usize = MAX_LARGE_STORAGE;
+pub const HOUSING_INTERIOR_PLACED_PAGE_COUNT: usize = 12;
+pub const HOUSING_INTERIOR_STOREROOM_PAGE_COUNT: usize = 11;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Inventory {
@@ -610,8 +613,8 @@ impl Inventory {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct HousingInventory {
     //pub plot_size: kawari::ipc::zone::PlotSize,
-    pub interior: Vec<GenericStorage<MAX_LARGE_STORAGE>>,
-    pub interior_storeroom: Vec<GenericStorage<MAX_LARGE_STORAGE>>,
+    pub interior: Vec<GenericStorage<MAX_HOUSING_INTERIOR_STORAGE>>,
+    pub interior_storeroom: Vec<GenericStorage<MAX_HOUSING_INTERIOR_STORAGE>>,
     // TODO: Unclear if we need to emulate this
     pub interior_appearance: Vec<GenericStorage<MAX_LARGE_STORAGE>>,
     pub exterior: Vec<GenericStorage<MAX_LARGE_STORAGE>>,
@@ -624,7 +627,7 @@ impl HousingInventory {
     pub const INT_STORAGE_APT_FC: usize = 2;
     pub const INT_STORAGE_SMALL: usize = 3;
     pub const INT_STORAGE_MEDIUM: usize = 4;
-    pub const INT_STORAGE_MANSION: usize = 8;
+    pub const INT_STORAGE_MANSION: usize = HOUSING_INTERIOR_PLACED_PAGE_COUNT;
 }
 
 // By default, be an apartment/fc chamber.
@@ -632,42 +635,16 @@ impl Default for HousingInventory {
     fn default() -> Self {
         Self {
             // plot_size: kawari::ipc::zone::PlotSize::Small,
-            interior: vec![
-                GenericStorage::<MAX_LARGE_STORAGE>::new(
-                    ContainerType::HousingInteriorPlacedItems1,
-                ),
-                GenericStorage::<MAX_LARGE_STORAGE>::new(
-                    ContainerType::HousingInteriorPlacedItems2,
-                ),
-                GenericStorage::<MAX_LARGE_STORAGE>::new(
-                    ContainerType::HousingInteriorPlacedItems3,
-                ),
-                GenericStorage::<MAX_LARGE_STORAGE>::new(
-                    ContainerType::HousingInteriorPlacedItems4,
-                ),
-                GenericStorage::<MAX_LARGE_STORAGE>::new(
-                    ContainerType::HousingInteriorPlacedItems5,
-                ),
-                GenericStorage::<MAX_LARGE_STORAGE>::new(
-                    ContainerType::HousingInteriorPlacedItems6,
-                ),
-                GenericStorage::<MAX_LARGE_STORAGE>::new(
-                    ContainerType::HousingInteriorPlacedItems7,
-                ),
-                GenericStorage::<MAX_LARGE_STORAGE>::new(
-                    ContainerType::HousingInteriorPlacedItems8,
-                ),
-            ],
-            interior_storeroom: vec![
-                GenericStorage::<MAX_LARGE_STORAGE>::new(ContainerType::HousingInteriorStoreroom1),
-                GenericStorage::<MAX_LARGE_STORAGE>::new(ContainerType::HousingInteriorStoreroom2),
-                GenericStorage::<MAX_LARGE_STORAGE>::new(ContainerType::HousingInteriorStoreroom3),
-                GenericStorage::<MAX_LARGE_STORAGE>::new(ContainerType::HousingInteriorStoreroom4),
-                GenericStorage::<MAX_LARGE_STORAGE>::new(ContainerType::HousingInteriorStoreroom5),
-                GenericStorage::<MAX_LARGE_STORAGE>::new(ContainerType::HousingInteriorStoreroom6),
-                GenericStorage::<MAX_LARGE_STORAGE>::new(ContainerType::HousingInteriorStoreroom7),
-                GenericStorage::<MAX_LARGE_STORAGE>::new(ContainerType::HousingInteriorStoreroom8),
-            ],
+            interior: interior_placed_containers()
+                .iter()
+                .copied()
+                .map(GenericStorage::<MAX_HOUSING_INTERIOR_STORAGE>::new)
+                .collect(),
+            interior_storeroom: interior_storeroom_containers()
+                .iter()
+                .copied()
+                .map(GenericStorage::<MAX_HOUSING_INTERIOR_STORAGE>::new)
+                .collect(),
             interior_appearance: vec![GenericStorage::<MAX_LARGE_STORAGE>::new(
                 ContainerType::HousingInteriorAppearance,
             )],
@@ -691,41 +668,29 @@ impl HousingInventory {
         item: Item,
         desired_pages: DesiredHousingInventoryPages,
     ) -> Option<ItemInfo> {
-        let desired_pages = match desired_pages {
-            DesiredHousingInventoryPages::Interior => &mut self.interior,
-            DesiredHousingInventoryPages::InteriorStoreroom => &mut self.interior_storeroom,
+        match desired_pages {
+            DesiredHousingInventoryPages::Interior => {
+                add_in_empty_housing_slot(&mut self.interior, item)
+            }
+            DesiredHousingInventoryPages::InteriorStoreroom => {
+                add_in_empty_housing_slot(&mut self.interior_storeroom, item)
+            }
             DesiredHousingInventoryPages::Exterior => {
                 if !self.exterior.is_empty() {
-                    &mut self.exterior
+                    add_in_empty_housing_slot(&mut self.exterior, item)
                 } else {
-                    return None;
+                    None
                 }
             }
             DesiredHousingInventoryPages::ExteriorStoreroom => {
                 if !self.exterior_storeroom.is_empty() {
-                    &mut self.exterior_storeroom
+                    add_in_empty_housing_slot(&mut self.exterior_storeroom, item)
                 } else {
-                    return None;
+                    None
                 }
             }
-            DesiredHousingInventoryPages::None => {
-                return None;
-            }
-        };
-
-        for page in desired_pages {
-            for (slot_index, slot) in page.slots.iter_mut().enumerate() {
-                if slot.quantity == 0 {
-                    slot.clone_from(&item);
-                    return Some(ItemInfo {
-                        slot: slot_index as u16,
-                        container: page.kind,
-                        ..(*slot).into()
-                    });
-                }
-            }
+            DesiredHousingInventoryPages::None => None,
         }
-        None
     }
 
     pub fn get_desired_pages_from_intendeduse(
@@ -753,25 +718,21 @@ impl HousingInventory {
     }
 
     fn get_container_mut(&mut self, container_type: &ContainerType) -> Option<&mut dyn Storage> {
+        if let Some(index) = interior_placed_container_index(*container_type) {
+            return self
+                .interior
+                .get_mut(index)
+                .map(|container| container as &mut dyn Storage);
+        }
+
+        if let Some(index) = interior_storeroom_container_index(*container_type) {
+            return self
+                .interior_storeroom
+                .get_mut(index)
+                .map(|container| container as &mut dyn Storage);
+        }
+
         match container_type {
-            ContainerType::HousingInteriorPlacedItems1 => Some(&mut self.interior[0]),
-            ContainerType::HousingInteriorPlacedItems2 => Some(&mut self.interior[1]),
-            ContainerType::HousingInteriorPlacedItems3 => Some(&mut self.interior[2]),
-            ContainerType::HousingInteriorPlacedItems4 => Some(&mut self.interior[3]),
-            ContainerType::HousingInteriorPlacedItems5 => Some(&mut self.interior[4]),
-            ContainerType::HousingInteriorPlacedItems6 => Some(&mut self.interior[5]),
-            ContainerType::HousingInteriorPlacedItems7 => Some(&mut self.interior[6]),
-            ContainerType::HousingInteriorPlacedItems8 => Some(&mut self.interior[7]),
-
-            ContainerType::HousingInteriorStoreroom1 => Some(&mut self.interior_storeroom[0]),
-            ContainerType::HousingInteriorStoreroom2 => Some(&mut self.interior_storeroom[1]),
-            ContainerType::HousingInteriorStoreroom3 => Some(&mut self.interior_storeroom[2]),
-            ContainerType::HousingInteriorStoreroom4 => Some(&mut self.interior_storeroom[3]),
-            ContainerType::HousingInteriorStoreroom5 => Some(&mut self.interior_storeroom[4]),
-            ContainerType::HousingInteriorStoreroom6 => Some(&mut self.interior_storeroom[5]),
-            ContainerType::HousingInteriorStoreroom7 => Some(&mut self.interior_storeroom[6]),
-            ContainerType::HousingInteriorStoreroom8 => Some(&mut self.interior_storeroom[7]),
-
             ContainerType::HousingInteriorAppearance
             | ContainerType::HousingInteriorAppearanceEdit => {
                 Some(&mut self.interior_appearance[0])
@@ -788,25 +749,21 @@ impl HousingInventory {
     }
 
     pub fn get_container(&self, container_type: ContainerType) -> Option<&dyn Storage> {
+        if let Some(index) = interior_placed_container_index(container_type) {
+            return self
+                .interior
+                .get(index)
+                .map(|container| container as &dyn Storage);
+        }
+
+        if let Some(index) = interior_storeroom_container_index(container_type) {
+            return self
+                .interior_storeroom
+                .get(index)
+                .map(|container| container as &dyn Storage);
+        }
+
         match container_type {
-            ContainerType::HousingInteriorPlacedItems1 => Some(&self.interior[0]),
-            ContainerType::HousingInteriorPlacedItems2 => Some(&self.interior[1]),
-            ContainerType::HousingInteriorPlacedItems3 => Some(&self.interior[2]),
-            ContainerType::HousingInteriorPlacedItems4 => Some(&self.interior[3]),
-            ContainerType::HousingInteriorPlacedItems5 => Some(&self.interior[4]),
-            ContainerType::HousingInteriorPlacedItems6 => Some(&self.interior[5]),
-            ContainerType::HousingInteriorPlacedItems7 => Some(&self.interior[6]),
-            ContainerType::HousingInteriorPlacedItems8 => Some(&self.interior[7]),
-
-            ContainerType::HousingInteriorStoreroom1 => Some(&self.interior_storeroom[0]),
-            ContainerType::HousingInteriorStoreroom2 => Some(&self.interior_storeroom[1]),
-            ContainerType::HousingInteriorStoreroom3 => Some(&self.interior_storeroom[2]),
-            ContainerType::HousingInteriorStoreroom4 => Some(&self.interior_storeroom[3]),
-            ContainerType::HousingInteriorStoreroom5 => Some(&self.interior_storeroom[4]),
-            ContainerType::HousingInteriorStoreroom6 => Some(&self.interior_storeroom[5]),
-            ContainerType::HousingInteriorStoreroom7 => Some(&self.interior_storeroom[6]),
-            ContainerType::HousingInteriorStoreroom8 => Some(&self.interior_storeroom[7]),
-
             ContainerType::HousingInteriorAppearance
             | ContainerType::HousingInteriorAppearanceEdit => Some(&self.interior_appearance[0]),
             ContainerType::HousingExteriorAppearance
@@ -850,74 +807,113 @@ pub enum DesiredHousingInventoryPages {
     InteriorStoreroom,
 }
 
-pub fn indoor_container_for_flat_slot(slot: u16) -> Option<(ContainerType, u16)> {
-    let container_index = slot / MAX_LARGE_STORAGE as u16;
-    let container_slot = slot % MAX_LARGE_STORAGE as u16;
+pub fn interior_placed_containers() -> [ContainerType; HOUSING_INTERIOR_PLACED_PAGE_COUNT] {
+    [
+        ContainerType::HousingInteriorPlacedItems1,
+        ContainerType::HousingInteriorPlacedItems2,
+        ContainerType::HousingInteriorPlacedItems3,
+        ContainerType::HousingInteriorPlacedItems4,
+        ContainerType::HousingInteriorPlacedItems5,
+        ContainerType::HousingInteriorPlacedItems6,
+        ContainerType::HousingInteriorPlacedItems7,
+        ContainerType::HousingInteriorPlacedItems8,
+        ContainerType::HousingInteriorPlacedItems9,
+        ContainerType::HousingInteriorPlacedItems10,
+        ContainerType::HousingInteriorPlacedItems11,
+        ContainerType::HousingInteriorPlacedItems12,
+    ]
+}
 
-    let container = match container_index {
-        0 => ContainerType::HousingInteriorPlacedItems1,
-        1 => ContainerType::HousingInteriorPlacedItems2,
-        2 => ContainerType::HousingInteriorPlacedItems3,
-        3 => ContainerType::HousingInteriorPlacedItems4,
-        4 => ContainerType::HousingInteriorPlacedItems5,
-        5 => ContainerType::HousingInteriorPlacedItems6,
-        6 => ContainerType::HousingInteriorPlacedItems7,
-        7 => ContainerType::HousingInteriorPlacedItems8,
-        _ => return None,
-    };
+pub fn interior_storeroom_containers() -> [ContainerType; HOUSING_INTERIOR_STOREROOM_PAGE_COUNT] {
+    [
+        ContainerType::HousingInteriorStoreroom1,
+        ContainerType::HousingInteriorStoreroom2,
+        ContainerType::HousingInteriorStoreroom3,
+        ContainerType::HousingInteriorStoreroom4,
+        ContainerType::HousingInteriorStoreroom5,
+        ContainerType::HousingInteriorStoreroom6,
+        ContainerType::HousingInteriorStoreroom7,
+        ContainerType::HousingInteriorStoreroom8,
+        ContainerType::HousingInteriorStoreroom9,
+        ContainerType::HousingInteriorStoreroom10,
+        ContainerType::HousingInteriorStoreroom11,
+    ]
+}
+
+pub fn interior_placed_container_index(container: ContainerType) -> Option<usize> {
+    interior_placed_containers()
+        .iter()
+        .position(|candidate| *candidate == container)
+}
+
+pub fn interior_storeroom_container_index(container: ContainerType) -> Option<usize> {
+    interior_storeroom_containers()
+        .iter()
+        .position(|candidate| *candidate == container)
+}
+
+pub fn indoor_container_for_flat_slot(slot: u16) -> Option<(ContainerType, u16)> {
+    let container_index = slot / MAX_HOUSING_INTERIOR_STORAGE as u16;
+    let container_slot = slot % MAX_HOUSING_INTERIOR_STORAGE as u16;
+
+    let container = *interior_placed_containers().get(container_index as usize)?;
 
     Some((container, container_slot))
 }
 
 pub fn flat_slot_for_container(container: ContainerType, slot: u16) -> Option<u16> {
-    if slot >= MAX_LARGE_STORAGE as u16 {
+    if slot >= housing_container_slot_capacity(container) as u16 {
         return None;
     }
 
-    let page = match container {
-        ContainerType::HousingInteriorPlacedItems1 => 0,
-        ContainerType::HousingInteriorPlacedItems2 => 1,
-        ContainerType::HousingInteriorPlacedItems3 => 2,
-        ContainerType::HousingInteriorPlacedItems4 => 3,
-        ContainerType::HousingInteriorPlacedItems5 => 4,
-        ContainerType::HousingInteriorPlacedItems6 => 5,
-        ContainerType::HousingInteriorPlacedItems7 => 6,
-        ContainerType::HousingInteriorPlacedItems8 => 7,
-        ContainerType::HousingExteriorPlacedItems => 0,
-        _ => return None,
+    let page = if let Some(page) = interior_placed_container_index(container) {
+        page
+    } else if container == ContainerType::HousingExteriorPlacedItems {
+        0
+    } else {
+        return None;
     };
 
-    Some(page * MAX_LARGE_STORAGE as u16 + slot)
+    Some(page as u16 * housing_container_slot_capacity(container) as u16 + slot)
+}
+
+pub fn housing_container_slot_capacity(container: ContainerType) -> usize {
+    if interior_placed_container_index(container).is_some()
+        || interior_storeroom_container_index(container).is_some()
+    {
+        MAX_HOUSING_INTERIOR_STORAGE
+    } else {
+        MAX_LARGE_STORAGE
+    }
+}
+
+fn add_in_empty_housing_slot<const N: usize>(
+    pages: &mut [GenericStorage<N>],
+    item: Item,
+) -> Option<ItemInfo> {
+    for page in pages {
+        for (slot_index, slot) in page.slots.iter_mut().enumerate() {
+            if slot.quantity == 0 {
+                slot.clone_from(&item);
+                return Some(ItemInfo {
+                    slot: slot_index as u16,
+                    container: page.kind,
+                    ..(*slot).into()
+                });
+            }
+        }
+    }
+    None
 }
 
 pub fn is_housing_placed_container(container: ContainerType) -> bool {
-    matches!(
-        container,
-        ContainerType::HousingExteriorPlacedItems
-            | ContainerType::HousingInteriorPlacedItems1
-            | ContainerType::HousingInteriorPlacedItems2
-            | ContainerType::HousingInteriorPlacedItems3
-            | ContainerType::HousingInteriorPlacedItems4
-            | ContainerType::HousingInteriorPlacedItems5
-            | ContainerType::HousingInteriorPlacedItems6
-            | ContainerType::HousingInteriorPlacedItems7
-            | ContainerType::HousingInteriorPlacedItems8
-    )
+    container == ContainerType::HousingExteriorPlacedItems
+        || interior_placed_container_index(container).is_some()
 }
 
 pub fn is_housing_storeroom_container(container: ContainerType) -> bool {
-    matches!(
-        container,
-        ContainerType::HousingExteriorStoreroom
-            | ContainerType::HousingInteriorStoreroom1
-            | ContainerType::HousingInteriorStoreroom2
-            | ContainerType::HousingInteriorStoreroom3
-            | ContainerType::HousingInteriorStoreroom4
-            | ContainerType::HousingInteriorStoreroom5
-            | ContainerType::HousingInteriorStoreroom6
-            | ContainerType::HousingInteriorStoreroom7
-            | ContainerType::HousingInteriorStoreroom8
-    )
+    container == ContainerType::HousingExteriorStoreroom
+        || interior_storeroom_container_index(container).is_some()
 }
 
 #[cfg(test)]
@@ -1006,10 +1002,10 @@ mod housing_inventory_tests {
             Some((ContainerType::HousingInteriorPlacedItems2, 0))
         );
         assert_eq!(
-            indoor_container_for_flat_slot(399),
-            Some((ContainerType::HousingInteriorPlacedItems8, 49))
+            indoor_container_for_flat_slot(599),
+            Some((ContainerType::HousingInteriorPlacedItems12, 49))
         );
-        assert_eq!(indoor_container_for_flat_slot(400), None);
+        assert_eq!(indoor_container_for_flat_slot(600), None);
     }
 
     #[test]
@@ -1023,8 +1019,8 @@ mod housing_inventory_tests {
             Some(50)
         );
         assert_eq!(
-            flat_slot_for_container(ContainerType::HousingInteriorPlacedItems8, 49),
-            Some(399)
+            flat_slot_for_container(ContainerType::HousingInteriorPlacedItems12, 49),
+            Some(599)
         );
         assert_eq!(
             flat_slot_for_container(ContainerType::HousingExteriorPlacedItems, 12),

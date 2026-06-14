@@ -10,14 +10,13 @@ use kawari::{
     common::{ObjectId, Position, STRIKING_DUMMY_NAME_ID, Timeline},
     ipc::zone::{
         BattleNpcSubKind, CharacterDataFlag, CommonSpawn, ObjectKind,
-        SPAWN_OBJECT_TARGETABLE_STATUS_HOUSING_EVENT_OBJECT, SpawnNpc, SpawnObject,
+        SPAWN_OBJECT_TARGETABLE_STATUS_NONE, SpawnNpc, SpawnObject,
     },
 };
 
-const HOUSING_ENTITY_PREFIX: u32 = 0x6A00_0000;
+const HOUSING_ENTITY_PREFIX: u32 = 0x4000_0000;
 const HOUSING_STRIKING_DUMMY_ENTITY_PREFIX: u32 = 0x6B00_0000;
 const HOUSING_STRIKING_DUMMY_GIMMICK_PREFIX: u32 = 0x6C00_0000;
-const HOUSING_ENTITY_INDOOR_FLAG: u32 = 0x0001_0000;
 const HOUSING_OBJECT_TYPE_YARD_OBJECT: u32 = 2;
 const HOUSING_OBJECT_TYPE_FURNITURE: u32 = 3;
 const HOUSING_STRIKING_DUMMY_LEVEL: u8 = 1;
@@ -34,13 +33,8 @@ pub fn housing_furniture_tracking_id(key: HousingFurnitureObjectKey) -> u16 {
 
 pub fn housing_furniture_actor_id(key: HousingFurnitureObjectKey) -> ObjectId {
     let tracking_id = housing_furniture_tracking_id(key) as u32;
-    let indoor_flag = if key.indoors {
-        HOUSING_ENTITY_INDOOR_FLAG
-    } else {
-        0
-    };
 
-    ObjectId(HOUSING_ENTITY_PREFIX | indoor_flag | tracking_id)
+    ObjectId(HOUSING_ENTITY_PREFIX | tracking_id)
 }
 
 pub fn housing_striking_dummy_actor_id(key: HousingFurnitureObjectKey) -> ObjectId {
@@ -74,9 +68,10 @@ pub fn build_housing_furniture_spawn(
         actor_id,
         SpawnObject {
             kind: ObjectKind::HousingEventObject,
-            targetable_status: SPAWN_OBJECT_TARGETABLE_STATUS_HOUSING_EVENT_OBJECT,
+            targetable_status: SPAWN_OBJECT_TARGETABLE_STATUS_NONE,
             base_id,
             entity_id: actor_id,
+            args2: housing_furniture_tracking_id(key) as u32,
             radius: 1.0,
             rotation: object.rotation,
             position: object.position,
@@ -160,7 +155,7 @@ pub fn upsert_housing_furniture_object(
     let key = HousingFurnitureObjectKey::from(&object);
 
     if !interactable {
-        tracing::info!(
+        tracing::debug!(
             slot = object.slot,
             catalog_id = object.catalog_id,
             indoors = object.indoors,
@@ -176,7 +171,7 @@ pub fn upsert_housing_furniture_object(
             build_housing_striking_dummy_spawn(object, striking_dummy_data)
     {
         instance.actors.remove(&housing_furniture_actor_id(key));
-        tracing::info!(
+        tracing::debug!(
             actor_id = actor_id.0,
             slot = object.slot,
             catalog_id = object.catalog_id,
@@ -195,7 +190,7 @@ pub fn upsert_housing_furniture_object(
         .actors
         .remove(&housing_striking_dummy_actor_id(key));
     let (actor_id, spawn) = build_housing_furniture_spawn(object, interactable)?;
-    tracing::info!(
+    tracing::debug!(
         actor_id = actor_id.0,
         slot = object.slot,
         catalog_id = object.catalog_id,
@@ -251,19 +246,20 @@ pub fn spawn_housing_furniture_object_for_current_clients(
     instance: &Instance,
     network: &mut NetworkState,
     actor_id: ObjectId,
-) {
+) -> usize {
     let Some(actor) = instance.find_actor(actor_id) else {
-        tracing::info!(
+        tracing::debug!(
             actor_id = actor_id.0,
             "Skipping housing furniture object spawn because actor is not in instance"
         );
-        return;
+        return 0;
     };
     let mut failed_clients = Vec::new();
+    let mut sent_count = 0;
 
     for (client_id, (handle, state)) in &mut network.clients {
         let Some(viewer) = instance.find_actor(handle.actor_id) else {
-            tracing::info!(
+            tracing::debug!(
                 client_id = ?client_id,
                 actor_id = actor_id.0,
                 viewer_actor_id = handle.actor_id.0,
@@ -272,7 +268,7 @@ pub fn spawn_housing_furniture_object_for_current_clients(
             continue;
         };
         if !viewer.is_valid() {
-            tracing::info!(
+            tracing::debug!(
                 client_id = ?client_id,
                 actor_id = actor_id.0,
                 viewer_actor_id = handle.actor_id.0,
@@ -281,7 +277,7 @@ pub fn spawn_housing_furniture_object_for_current_clients(
             continue;
         }
         if !viewer.in_range_of(actor) {
-            tracing::info!(
+            tracing::debug!(
                 client_id = ?client_id,
                 actor_id = actor_id.0,
                 viewer_actor_id = handle.actor_id.0,
@@ -290,7 +286,7 @@ pub fn spawn_housing_furniture_object_for_current_clients(
             continue;
         }
         if state.has_spawned(actor_id) {
-            tracing::info!(
+            tracing::debug!(
                 client_id = ?client_id,
                 actor_id = actor_id.0,
                 "Skipping housing furniture object spawn because client already has it"
@@ -299,16 +295,18 @@ pub fn spawn_housing_furniture_object_for_current_clients(
         }
 
         if let Some(message) = NetworkState::spawn_existing_actor_message(state, actor_id, actor) {
-            tracing::info!(
+            tracing::debug!(
                 client_id = ?client_id,
                 actor_id = actor_id.0,
-                "Sending housing furniture object spawn to client"
+            "Sending housing furniture object spawn to client"
             );
             if handle.send(message).is_err() {
                 failed_clients.push(*client_id);
+            } else {
+                sent_count += 1;
             }
         } else {
-            tracing::info!(
+            tracing::debug!(
                 client_id = ?client_id,
                 actor_id = actor_id.0,
                 "Skipping housing furniture object spawn because client allocator is full"
@@ -317,6 +315,7 @@ pub fn spawn_housing_furniture_object_for_current_clients(
     }
 
     network.to_remove.extend(failed_clients);
+    sent_count
 }
 
 pub fn update_housing_furniture_object_position_networked(
@@ -399,6 +398,19 @@ mod tests {
     }
 
     #[test]
+    fn indoor_actor_id_uses_capture_observed_dynamic_object_range() {
+        let key = HousingFurnitureObjectKey {
+            slot: 51,
+            indoors: true,
+            plot_index: 7,
+        };
+
+        let actor_id = housing_furniture_actor_id(key);
+
+        assert_eq!(actor_id.0, 0x4000_0033);
+    }
+
+    #[test]
     fn outdoor_tracking_id_packs_plot_and_slot() {
         let key = HousingFurnitureObjectKey {
             slot: 9,
@@ -410,7 +422,7 @@ mod tests {
     }
 
     #[test]
-    fn indoor_spawn_object_uses_catalog_housing_object_id_and_targetable_kind() {
+    fn indoor_spawn_object_uses_capture_observed_catalog_id_and_slot_args() {
         let object = furniture(51, true, 0);
 
         let (actor_id, spawn) = build_housing_furniture_spawn(object, true).unwrap();
@@ -418,17 +430,15 @@ mod tests {
         assert_eq!(actor_id, housing_furniture_actor_id((&object).into()));
         assert_eq!(spawn.entity_id, actor_id);
         assert_eq!(spawn.kind, ObjectKind::HousingEventObject);
-        assert_eq!(
-            spawn.targetable_status,
-            SPAWN_OBJECT_TARGETABLE_STATUS_HOUSING_EVENT_OBJECT
-        );
+        assert_eq!(spawn.targetable_status, 0x00);
         assert_eq!(spawn.base_id, 0x0003_007B);
+        assert_eq!(spawn.args2, 51);
         assert_eq!(spawn.position, object.position);
         assert_eq!(spawn.rotation, object.rotation);
     }
 
     #[test]
-    fn indoor_spawn_object_writes_retail_housing_targetable_status() {
+    fn indoor_spawn_object_writes_capture_observed_targetable_status() {
         let object = furniture(51, true, 0);
         let (_, spawn) = build_housing_furniture_spawn(object, true).unwrap();
         let mut buffer = Cursor::new(Vec::new());
@@ -436,7 +446,7 @@ mod tests {
         spawn.write_le(&mut buffer).unwrap();
 
         let bytes = buffer.into_inner();
-        assert_eq!(bytes[2], 0x04);
+        assert_eq!(bytes[2], 0x00);
     }
 
     #[test]

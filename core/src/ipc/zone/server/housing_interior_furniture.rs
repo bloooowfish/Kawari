@@ -11,7 +11,8 @@ pub struct FurnitureList {
     pub index: u8,
     /// The number of these lists that will be sent.
     pub count: u8,
-    /// Seems to be some sort of outdoor vs indoor flag. If it's 0, it means this is for outdoor furniture, and 100 means it's for an interior.
+    /// Indoor lists use this as the number of furniture slots represented by this packet.
+    /// Outdoor lists observed so far keep this at 0.
     pub unk2: u8,
     /// The actual furnishings.
     #[br(count = Furniture::COUNT)]
@@ -76,6 +77,24 @@ pub struct Furniture {
     pub position: Position,
 }
 
+/// Per-furniture object data map values used by current clients during housing load.
+///
+/// IDA shows the client stores up to 8 entries per furniture index. Each entry is
+/// split across parallel arrays in the packet and expanded client-side into a
+/// 6-byte value-set record.
+#[binrw]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct HousingObjectDataValueSet {
+    pub furniture_index: u16,
+    pub value_count: u8,
+    pub reserved: u8,
+    pub values: [u16; 8],
+    pub param_a: [u8; 8],
+    pub param_b: [u8; 8],
+    pub param_c: [u8; 8],
+    pub padding: [u8; 4],
+}
+
 /// Data sent to a client that observes another client moving or rotating furniture.
 #[binrw]
 #[derive(Clone, Copy, Debug, Default)]
@@ -101,4 +120,37 @@ pub struct FurnitureTranslatedForObserver {
 impl Furniture {
     pub const SIZE: usize = 24;
     pub const COUNT: usize = 100;
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Cursor;
+
+    use binrw::BinWrite;
+
+    use super::*;
+
+    #[test]
+    fn housing_object_data_value_set_writes_retail_layout() {
+        let mut buffer = Cursor::new(Vec::new());
+        HousingObjectDataValueSet {
+            furniture_index: 0x00ce,
+            value_count: 8,
+            values: [1, 1, 1, 1, 1, 1, 0x0101, 0x0201],
+            param_a: [2, 3, 0, 0, 0, 0, 0, 0],
+            ..Default::default()
+        }
+        .write_le(&mut buffer)
+        .unwrap();
+
+        let bytes = buffer.into_inner();
+        assert_eq!(bytes.len(), 48);
+        assert_eq!(&bytes[0..4], &[0xce, 0x00, 0x08, 0x00]);
+        assert_eq!(
+            &bytes[4..20],
+            &[1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 1, 1, 2]
+        );
+        assert_eq!(&bytes[20..28], &[2, 3, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(&bytes[28..], &[0; 20]);
+    }
 }

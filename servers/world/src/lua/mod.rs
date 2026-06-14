@@ -13,7 +13,7 @@ pub use state::{KawariLua, KawariLuaState};
 mod task;
 pub use task::{
     HousingEstateKind, HousingExteriorColorField, HousingExteriorField, HousingInteriorField,
-    HousingKit, HousingResetMode, LuaTask,
+    HousingKit, HousingPresetScope, HousingResetMode, LuaTask,
 };
 
 mod zone;

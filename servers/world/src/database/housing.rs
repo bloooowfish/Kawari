@@ -6,6 +6,8 @@ use kawari::{
 };
 use serde::{Deserialize, Serialize};
 
+use crate::inventory::interior_placed_containers;
+
 use super::{
     WorldDatabase,
     models::{HousingEstate, HousingFurniture},
@@ -536,6 +538,74 @@ impl WorldDatabase {
         .unwrap_or_default()
     }
 
+    pub fn replace_housing_placed_furniture_for_estate(
+        &mut self,
+        for_land_ident: i64,
+        include_interior: bool,
+        include_exterior: bool,
+        rows: &[HousingFurniture],
+    ) -> Result<usize, diesel::result::Error> {
+        let now = self.database_time();
+
+        self.connection.transaction(|connection| {
+            let mut deleted = 0;
+
+            if include_exterior {
+                deleted += diesel::delete(
+                    housing_furniture::table
+                        .filter(housing_furniture::land_ident.eq(for_land_ident))
+                        .filter(housing_furniture::container_type.eq(container_type_to_i32(
+                            ContainerType::HousingExteriorPlacedItems,
+                        ))),
+                )
+                .execute(connection)?;
+            }
+
+            if include_interior {
+                for container in interior_placed_containers() {
+                    deleted += diesel::delete(
+                        housing_furniture::table
+                            .filter(housing_furniture::land_ident.eq(for_land_ident))
+                            .filter(
+                                housing_furniture::container_type
+                                    .eq(container_type_to_i32(container)),
+                            ),
+                    )
+                    .execute(connection)?;
+                }
+            }
+
+            for row in rows {
+                let mut row = row.clone();
+                row.updated_at = now;
+
+                diesel::insert_into(housing_furniture::table)
+                    .values(&row)
+                    .on_conflict((
+                        housing_furniture::land_ident,
+                        housing_furniture::container_type,
+                        housing_furniture::slot,
+                    ))
+                    .do_update()
+                    .set((
+                        housing_furniture::item_id.eq(row.item_id),
+                        housing_furniture::catalog_id.eq(row.catalog_id),
+                        housing_furniture::stain.eq(row.stain),
+                        housing_furniture::placed.eq(row.placed),
+                        housing_furniture::pos_x.eq(row.pos_x),
+                        housing_furniture::pos_y.eq(row.pos_y),
+                        housing_furniture::pos_z.eq(row.pos_z),
+                        housing_furniture::rotation.eq(row.rotation),
+                        housing_furniture::created_by_content_id.eq(row.created_by_content_id),
+                        housing_furniture::updated_at.eq(row.updated_at),
+                    ))
+                    .execute(connection)?;
+            }
+
+            Ok(deleted)
+        })
+    }
+
     pub fn delete_housing_estate_and_furniture(&mut self, for_land_ident: i64) -> bool {
         self.connection
             .transaction::<bool, diesel::result::Error, _>(|connection| {
@@ -1052,14 +1122,14 @@ fn housing_container_kind(container_type: i32) -> &'static str {
         }
         value
             if (container_type_to_i32(ContainerType::HousingInteriorPlacedItems1)
-                ..=container_type_to_i32(ContainerType::HousingInteriorPlacedItems8))
+                ..=container_type_to_i32(ContainerType::HousingInteriorPlacedItems12))
                 .contains(&value) =>
         {
             "indoor_placed"
         }
         value
             if (container_type_to_i32(ContainerType::HousingInteriorStoreroom1)
-                ..=container_type_to_i32(ContainerType::HousingInteriorStoreroom8))
+                ..=container_type_to_i32(ContainerType::HousingInteriorStoreroom11))
                 .contains(&value) =>
         {
             "indoor_storeroom"
@@ -1639,6 +1709,154 @@ mod tests {
             db.housing_estate_by_house_id(HouseId::from_u64(estate.house_id as u64))
                 .is_some()
         );
+    }
+
+    #[test]
+    fn replace_housing_placed_furniture_replaces_all_placed_rows_and_preserves_storerooms() {
+        let mut db = test_db();
+        let estate = db.ensure_test_estate(100, "Tester", 67);
+
+        for row in [
+            HousingFurniture {
+                land_ident: estate.land_ident,
+                container_type: container_type_to_i32(ContainerType::HousingInteriorPlacedItems1),
+                slot: 0,
+                item_id: 1000,
+                catalog_id: 55,
+                placed: true,
+                ..Default::default()
+            },
+            HousingFurniture {
+                land_ident: estate.land_ident,
+                container_type: container_type_to_i32(ContainerType::HousingInteriorStoreroom1),
+                slot: 0,
+                item_id: 1001,
+                catalog_id: 56,
+                placed: false,
+                ..Default::default()
+            },
+            HousingFurniture {
+                land_ident: estate.land_ident,
+                container_type: container_type_to_i32(ContainerType::HousingExteriorPlacedItems),
+                slot: 0,
+                item_id: 1002,
+                catalog_id: 57,
+                placed: true,
+                ..Default::default()
+            },
+            HousingFurniture {
+                land_ident: estate.land_ident,
+                container_type: container_type_to_i32(ContainerType::HousingExteriorStoreroom),
+                slot: 0,
+                item_id: 1003,
+                catalog_id: 58,
+                placed: false,
+                ..Default::default()
+            },
+        ] {
+            db.upsert_housing_furniture(row);
+        }
+
+        let deleted = db
+            .replace_housing_placed_furniture_for_estate(
+                estate.land_ident,
+                true,
+                true,
+                &[
+                    HousingFurniture {
+                        land_ident: estate.land_ident,
+                        container_type: container_type_to_i32(
+                            ContainerType::HousingInteriorPlacedItems1,
+                        ),
+                        slot: 0,
+                        item_id: 2000,
+                        catalog_id: 155,
+                        placed: true,
+                        ..Default::default()
+                    },
+                    HousingFurniture {
+                        land_ident: estate.land_ident,
+                        container_type: container_type_to_i32(
+                            ContainerType::HousingExteriorPlacedItems,
+                        ),
+                        slot: 0,
+                        item_id: 2002,
+                        catalog_id: 157,
+                        placed: true,
+                        ..Default::default()
+                    },
+                ],
+            )
+            .unwrap();
+
+        let item_ids = db
+            .list_all_housing_furniture(estate.land_ident)
+            .into_iter()
+            .map(|row| row.item_id)
+            .collect::<Vec<_>>();
+
+        assert_eq!(deleted, 2);
+        assert!(item_ids.contains(&2000));
+        assert!(item_ids.contains(&2002));
+        assert!(item_ids.contains(&1001));
+        assert!(item_ids.contains(&1003));
+        assert!(!item_ids.contains(&1000));
+        assert!(!item_ids.contains(&1002));
+    }
+
+    #[test]
+    fn replace_housing_placed_furniture_can_target_only_interior_placed_rows() {
+        let mut db = test_db();
+        let estate = db.ensure_test_estate(100, "Tester", 67);
+
+        db.upsert_housing_furniture(HousingFurniture {
+            land_ident: estate.land_ident,
+            container_type: container_type_to_i32(ContainerType::HousingInteriorPlacedItems1),
+            slot: 0,
+            item_id: 1000,
+            catalog_id: 55,
+            placed: true,
+            ..Default::default()
+        });
+        db.upsert_housing_furniture(HousingFurniture {
+            land_ident: estate.land_ident,
+            container_type: container_type_to_i32(ContainerType::HousingExteriorPlacedItems),
+            slot: 0,
+            item_id: 1002,
+            catalog_id: 57,
+            placed: true,
+            ..Default::default()
+        });
+
+        let deleted = db
+            .replace_housing_placed_furniture_for_estate(
+                estate.land_ident,
+                true,
+                false,
+                &[HousingFurniture {
+                    land_ident: estate.land_ident,
+                    container_type: container_type_to_i32(
+                        ContainerType::HousingInteriorPlacedItems1,
+                    ),
+                    slot: 0,
+                    item_id: 2000,
+                    catalog_id: 155,
+                    placed: true,
+                    ..Default::default()
+                }],
+            )
+            .unwrap();
+
+        let item_ids = db
+            .list_all_housing_furniture(estate.land_ident)
+            .into_iter()
+            .map(|row| row.item_id)
+            .collect::<Vec<_>>();
+
+        assert_eq!(deleted, 1);
+        assert!(item_ids.contains(&2000));
+        assert!(item_ids.contains(&1002));
+        assert!(!item_ids.contains(&1000));
     }
 
     #[test]

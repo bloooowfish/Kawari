@@ -123,6 +123,7 @@ pub use housing_ward::{HousingWardInfo, HousingWardSummaryItem};
 mod housing_interior_furniture;
 pub use housing_interior_furniture::{
     Furniture, FurnitureList, FurnitureTranslatedForObserver, HousingInteriorDetails,
+    HousingObjectDataValueSet,
 };
 
 mod housing_occupied_land_info;
@@ -904,6 +905,7 @@ pub enum ServerZoneIpcData {
         index: u8,
     },
     FurnitureList(FurnitureList),
+    HousingObjectDataValueSet(HousingObjectDataValueSet),
     OwnedHousing {
         #[brw(pad_after = 8)]
         free_company_estate: LandData,

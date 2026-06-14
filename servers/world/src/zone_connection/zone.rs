@@ -54,6 +54,8 @@ impl ZoneConnection {
         lua_content: &mut LuaContent,
     ) {
         self.spawned_in = false;
+        self.pending_housing_indoor_furniture_list_tail = false;
+        self.pending_housing_indoor_finish_loading = false;
 
         let bound_by_duty = content_finder_condition_id != 0;
 
@@ -486,10 +488,14 @@ impl ZoneConnection {
 
         // If the player isn't in a valid zone, or in instanced content (both crash the game) then we need to reset them.
         let should_reset;
+        let intended_use;
         {
             let mut game_data = self.gamedata.lock();
             should_reset = !game_data.is_zone_valid(zone_id as u16)
                 || game_data.is_zone_associated_with_content(zone_id as u16);
+            intended_use = game_data
+                .get_intended_use(zone_id as u32)
+                .unwrap_or(TerritoryIntendedUse::Jail);
         }
         if should_reset {
             // TODO: teleport them to their homepoint instead
@@ -498,6 +504,8 @@ impl ZoneConnection {
 
             self.send_notice("Moved you to a safe area to prevent a crash!")
                 .await;
+        } else {
+            self.normalize_housing_indoor_login_location(intended_use);
         }
     }
 
