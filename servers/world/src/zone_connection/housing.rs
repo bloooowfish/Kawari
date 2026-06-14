@@ -4178,7 +4178,7 @@ fn housing_interior_renovation_row_id_from_json(json: &str) -> Option<u16> {
     parse_housing_json_or_default::<HouseInteriorJson>(json, "housing interior").renovation_row_id
 }
 
-fn update_interior_json_renovation_row_id(
+pub(super) fn update_interior_json_renovation_row_id(
     existing_json: &str,
     renovation_row_id: u16,
 ) -> Result<String, serde_json::Error> {

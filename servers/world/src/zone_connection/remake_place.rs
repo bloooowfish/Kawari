@@ -12,15 +12,18 @@ use crate::{
         HOUSING_INTERIOR_PLACED_PAGE_COUNT, MAX_HOUSING_INTERIOR_STORAGE, MAX_LARGE_STORAGE,
         indoor_container_for_flat_slot,
     },
-    lua::HousingPresetScope,
+    lua::{HousingInteriorField, HousingPresetScope},
 };
-use kawari::common::ContainerType;
+use kawari::{common::ContainerType, ipc::zone::PlotSize};
 
 const DEFAULT_REMAKE_PLACE_LAYOUT_ROOT: &str = r"E:\FF14\DT Mods\HousingLayout\Large";
 const REMAKE_PLACE_LAYOUT_ROOT_ENV: &str = "KAWARI_REMAKE_PLACE_LAYOUT_ROOT";
 const INTERIOR_PLACED_CAPACITY: usize =
     MAX_HOUSING_INTERIOR_STORAGE * HOUSING_INTERIOR_PLACED_PAGE_COUNT;
 const EXTERIOR_PLACED_CAPACITY: usize = MAX_LARGE_STORAGE;
+pub(super) const REMAKE_PLACE_ITEM_UI_CATEGORY_INTERIOR_WALL: u8 = 73;
+pub(super) const REMAKE_PLACE_ITEM_UI_CATEGORY_FLOORING: u8 = 74;
+pub(super) const REMAKE_PLACE_ITEM_UI_CATEGORY_CEILING_LIGHT: u8 = 75;
 
 #[derive(Debug, Clone)]
 pub(super) struct RemakePlaceImportRows {
@@ -30,6 +33,15 @@ pub(super) struct RemakePlaceImportRows {
     pub skipped_missing_item_id: usize,
     pub skipped_missing_catalog: usize,
     pub skipped_capacity: usize,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(super) struct RemakePlaceInteriorFixtureUpdates {
+    pub renovation_row_id: Option<u16>,
+    pub fixture_updates: Vec<(HousingInteriorField, u32)>,
+    pub skipped_missing_item_id: usize,
+    pub skipped_missing_item_data: usize,
+    pub skipped_wrong_category: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -44,11 +56,26 @@ pub(super) struct RemakePlaceLayout {
     #[serde(default = "default_layout_scale")]
     interior_scale: f32,
     #[serde(default)]
+    interior_fixture: Vec<RemakePlaceInteriorFixture>,
+    #[serde(default)]
     interior_furniture: Vec<RemakePlaceFurniture>,
     #[serde(default = "default_layout_scale")]
     exterior_scale: f32,
     #[serde(default)]
     exterior_furniture: Vec<RemakePlaceFurniture>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RemakePlaceInteriorFixture {
+    #[serde(default)]
+    level: String,
+    #[serde(default, rename = "type")]
+    fixture_type: String,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    item_id: u32,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -209,6 +236,52 @@ where
     result
 }
 
+pub(super) fn build_remake_place_interior_fixture_updates<F>(
+    layout: &RemakePlaceLayout,
+    plot_size: PlotSize,
+    mut item_data_for_item: F,
+) -> RemakePlaceInteriorFixtureUpdates
+where
+    F: FnMut(u32) -> Option<(u32, u8)>,
+{
+    let mut result = RemakePlaceInteriorFixtureUpdates::default();
+
+    for fixture in &layout.interior_fixture {
+        let fixture_type = normalize_remake_place_fixture_token(&fixture.fixture_type);
+        if fixture_type == "district" {
+            if let Some(row_id) = remake_place_renovation_row_id(&fixture.name, plot_size) {
+                result.renovation_row_id = Some(row_id);
+            }
+            continue;
+        }
+
+        let Some(field) =
+            remake_place_interior_fixture_field(&fixture.level, &fixture.fixture_type)
+        else {
+            continue;
+        };
+
+        if fixture.item_id == 0 {
+            result.skipped_missing_item_id += 1;
+            continue;
+        }
+
+        let Some((additional_data, item_ui_category)) = item_data_for_item(fixture.item_id) else {
+            result.skipped_missing_item_data += 1;
+            continue;
+        };
+
+        if remake_place_expected_item_ui_category(field) != Some(item_ui_category) {
+            result.skipped_wrong_category += 1;
+            continue;
+        }
+
+        upsert_fixture_update(&mut result.fixture_updates, field, additional_data);
+    }
+
+    result
+}
+
 fn build_row<F, S>(
     furniture: &RemakePlaceFurniture,
     layout_scale: f32,
@@ -276,6 +349,105 @@ where
 
 fn container_type_to_i32(container_type: ContainerType) -> i32 {
     container_type as u16 as i32
+}
+
+fn remake_place_interior_fixture_field(
+    level: &str,
+    fixture_type: &str,
+) -> Option<HousingInteriorField> {
+    let level = normalize_remake_place_fixture_token(level);
+    let fixture_type = normalize_remake_place_fixture_token(fixture_type);
+
+    match (level.as_str(), fixture_type.as_str()) {
+        ("groundfloor" | "ground" | "firstfloor" | "1stfloor", "wall") => {
+            Some(HousingInteriorField::GroundWalls)
+        }
+        ("groundfloor" | "ground" | "firstfloor" | "1stfloor", "floor") => {
+            Some(HousingInteriorField::GroundFloor)
+        }
+        ("groundfloor" | "ground" | "firstfloor" | "1stfloor", "light" | "ceilinglight") => {
+            Some(HousingInteriorField::GroundChandelier)
+        }
+        ("upperfloor" | "topfloor" | "secondfloor" | "2ndfloor", "wall") => {
+            Some(HousingInteriorField::TopWalls)
+        }
+        ("upperfloor" | "topfloor" | "secondfloor" | "2ndfloor", "floor") => {
+            Some(HousingInteriorField::TopFloor)
+        }
+        ("upperfloor" | "topfloor" | "secondfloor" | "2ndfloor", "light" | "ceilinglight") => {
+            Some(HousingInteriorField::TopChandelier)
+        }
+        ("basement" | "cellar", "wall") => Some(HousingInteriorField::CellarWalls),
+        ("basement" | "cellar", "floor") => Some(HousingInteriorField::CellarFloor),
+        ("basement" | "cellar", "light" | "ceilinglight") => {
+            Some(HousingInteriorField::CellarChandelier)
+        }
+        _ => None,
+    }
+}
+
+fn remake_place_expected_item_ui_category(field: HousingInteriorField) -> Option<u8> {
+    match field {
+        HousingInteriorField::GroundWalls
+        | HousingInteriorField::TopWalls
+        | HousingInteriorField::CellarWalls => Some(REMAKE_PLACE_ITEM_UI_CATEGORY_INTERIOR_WALL),
+        HousingInteriorField::GroundFloor
+        | HousingInteriorField::TopFloor
+        | HousingInteriorField::CellarFloor => Some(REMAKE_PLACE_ITEM_UI_CATEGORY_FLOORING),
+        HousingInteriorField::GroundChandelier
+        | HousingInteriorField::TopChandelier
+        | HousingInteriorField::CellarChandelier => {
+            Some(REMAKE_PLACE_ITEM_UI_CATEGORY_CEILING_LIGHT)
+        }
+        _ => None,
+    }
+}
+
+fn remake_place_renovation_row_id(name: &str, plot_size: PlotSize) -> Option<u16> {
+    let normalized = normalize_remake_place_fixture_token(name);
+    let base = if normalized.contains("minimalistdark") || normalized.contains("simpledark") {
+        19
+    } else if normalized.contains("minimalist") || normalized.contains("simple") {
+        16
+    } else if normalized.contains("empyreum") {
+        13
+    } else if normalized.contains("shirogane") {
+        10
+    } else if normalized.contains("goblet") {
+        7
+    } else if normalized.contains("lavender") {
+        4
+    } else if normalized.contains("mist") {
+        1
+    } else {
+        return None;
+    };
+
+    Some(base + plot_size_index(plot_size))
+}
+
+fn plot_size_index(plot_size: PlotSize) -> u16 {
+    match plot_size {
+        PlotSize::Small => 0,
+        PlotSize::Medium => 1,
+        PlotSize::Large => 2,
+    }
+}
+
+fn upsert_fixture_update(
+    updates: &mut Vec<(HousingInteriorField, u32)>,
+    field: HousingInteriorField,
+    value: u32,
+) {
+    if let Some((_, existing)) = updates
+        .iter_mut()
+        .find(|(existing_field, _)| *existing_field == field)
+    {
+        *existing = value;
+        return;
+    }
+
+    updates.push((field, value));
 }
 
 fn flattened_furniture(furniture: &[RemakePlaceFurniture]) -> Vec<&RemakePlaceFurniture> {
@@ -450,6 +622,14 @@ fn normalize_layout_name(value: &str) -> String {
         .strip_suffix(".json")
         .unwrap_or(value.as_str())
         .to_string()
+}
+
+fn normalize_remake_place_fixture_token(value: &str) -> String {
+    value
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
 }
 
 fn compute_z_angle(rotation: [f32; 4]) -> f32 {
@@ -628,6 +808,61 @@ mod tests {
         assert_eq!(result.rows[0].stain, 42);
         assert_eq!(result.rows[1].stain, 77);
         assert_eq!(result.rows[2].stain, 0);
+    }
+
+    #[test]
+    fn imports_remake_place_interior_fixtures_and_style() {
+        let json = r#"
+        {
+            "interiorFixture": [
+                { "level": "", "type": "District", "name": "Minimalist", "itemId": 0 },
+                { "level": "Basement", "type": "Floor", "name": "Basement Floor", "itemId": 10 },
+                { "level": "Basement", "type": "Wall", "name": "Basement Wall", "itemId": 11 },
+                { "level": "Ground Floor", "type": "Light", "name": "Ground Light", "itemId": 12 },
+                { "level": "Upper Floor", "type": "Wall", "name": "Upper Wall", "itemId": 13 },
+                { "level": "Ground Floor", "type": "Floor", "name": "Wrong Category", "itemId": 14 }
+            ]
+        }
+        "#;
+
+        let layout = parse_remake_place_layout_json(json).expect("layout should parse");
+        let result =
+            build_remake_place_interior_fixture_updates(&layout, PlotSize::Large, |item_id| {
+                match item_id {
+                    10 => Some((110, REMAKE_PLACE_ITEM_UI_CATEGORY_FLOORING)),
+                    11 => Some((111, REMAKE_PLACE_ITEM_UI_CATEGORY_INTERIOR_WALL)),
+                    12 => Some((112, REMAKE_PLACE_ITEM_UI_CATEGORY_CEILING_LIGHT)),
+                    13 => Some((113, REMAKE_PLACE_ITEM_UI_CATEGORY_INTERIOR_WALL)),
+                    14 => Some((114, REMAKE_PLACE_ITEM_UI_CATEGORY_INTERIOR_WALL)),
+                    _ => None,
+                }
+            });
+
+        assert_eq!(result.renovation_row_id, Some(18));
+        assert_eq!(result.fixture_updates.len(), 4);
+        assert!(
+            result
+                .fixture_updates
+                .contains(&(HousingInteriorField::CellarFloor, 110,))
+        );
+        assert!(
+            result
+                .fixture_updates
+                .contains(&(HousingInteriorField::CellarWalls, 111,))
+        );
+        assert!(
+            result
+                .fixture_updates
+                .contains(&(HousingInteriorField::GroundChandelier, 112,))
+        );
+        assert!(
+            result
+                .fixture_updates
+                .contains(&(HousingInteriorField::TopWalls, 113,))
+        );
+        assert_eq!(result.skipped_missing_item_id, 0);
+        assert_eq!(result.skipped_missing_item_data, 0);
+        assert_eq!(result.skipped_wrong_category, 1);
     }
 
     #[test]

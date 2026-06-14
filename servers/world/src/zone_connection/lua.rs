@@ -2,10 +2,11 @@
 
 use super::housing::{
     update_exterior_json_color, update_exterior_json_field, update_interior_json_field,
+    update_interior_json_renovation_row_id,
 };
 use super::remake_place::{
-    build_remake_place_furniture_rows, parse_remake_place_layout_file,
-    resolve_remake_place_preset_path,
+    build_remake_place_furniture_rows, build_remake_place_interior_fixture_updates,
+    parse_remake_place_layout_file, resolve_remake_place_preset_path,
 };
 use crate::{
     Event, HousingEstate, HousingEstateSpec, ItemInfoQuery, MAX_APARTMENT_ROOM_NUMBER, ToServer,
@@ -30,8 +31,8 @@ use kawari::{
         ORNAMENT_BITMASK_SIZE, TRIPLE_TRIAD_CARDS_BITMASK_SIZE,
     },
     ipc::zone::{
-        ActorControlCategory, ActorControlSelf, ClientTriggerCommand, ItemInfo, ServerZoneIpcData,
-        ServerZoneIpcSegment,
+        ActorControlCategory, ActorControlSelf, ClientTriggerCommand, ItemInfo, PlotSize,
+        ServerZoneIpcData, ServerZoneIpcSegment,
     },
 };
 
@@ -1286,33 +1287,71 @@ async fn apply_remake_place_preset_to_estate(
     let preset_path = resolve_remake_place_preset_path(path)?;
     let layout = parse_remake_place_layout_file(&preset_path.path)?;
     let created_by_content_id = Some(connection.player_data.character.content_id as i64);
-    let import_rows = {
-        let game_data = connection.gamedata.lock();
-        build_remake_place_furniture_rows(
+    let plot_size = PlotSize::from_repr(estate.plot_size as u8).unwrap_or(PlotSize::Large);
+    let (import_rows, fixture_updates) = {
+        let mut game_data = connection.gamedata.lock();
+        let import_rows = build_remake_place_furniture_rows(
             &layout,
             estate.land_ident,
             created_by_content_id,
             |item_id| game_data.get_furniture_catalog_id(item_id),
             |rgb| game_data.get_closest_housing_stain(rgb),
             scope,
-        )
+        );
+        let fixture_updates = if scope.includes_interior() {
+            build_remake_place_interior_fixture_updates(&layout, plot_size, |item_id| {
+                game_data
+                    .get_item_info(ItemInfoQuery::ById(item_id))
+                    .map(|item| (item.additional_data, item.item_ui_category))
+            })
+        } else {
+            Default::default()
+        };
+        (import_rows, fixture_updates)
     };
 
     let deleted = {
         let mut database = connection.database.lock();
-        database
+        let deleted = database
             .replace_housing_placed_furniture_for_estate(
                 estate.land_ident,
                 scope.includes_interior(),
                 scope.includes_exterior(),
                 &import_rows.rows,
             )
-            .map_err(|error| format!("Unable to apply ReMakePlace preset to database: {error}"))?
+            .map_err(|error| format!("Unable to apply ReMakePlace preset to database: {error}"))?;
+
+        if scope.includes_interior()
+            && (fixture_updates.renovation_row_id.is_some()
+                || !fixture_updates.fixture_updates.is_empty())
+        {
+            let mut interior_json = estate.interior_json.clone();
+            if let Some(renovation_row_id) = fixture_updates.renovation_row_id {
+                interior_json =
+                    update_interior_json_renovation_row_id(&interior_json, renovation_row_id)
+                        .map_err(|error| {
+                            format!("Unable to update ReMakePlace interior style: {error}")
+                        })?;
+            }
+
+            for (field, value) in &fixture_updates.fixture_updates {
+                interior_json = update_interior_json_field(&interior_json, *field, *value)
+                    .map_err(|error| {
+                        format!("Unable to update ReMakePlace interior fixture {field:?}: {error}")
+                    })?;
+            }
+
+            if !database.update_housing_interior_json(estate.land_ident, &interior_json) {
+                return Err("Unable to persist ReMakePlace interior fixtures.".to_string());
+            }
+        }
+
+        deleted
     };
     connection.clear_housing_furniture_reset_cache();
 
     Ok(format!(
-        "Applied ReMakePlace preset {} to {} ({}): indoor={} outdoor={} replaced={} skipped missing_item={} missing_catalog={} capacity={}. Re-enter the estate/ward to refresh visuals.",
+        "Applied ReMakePlace preset {} to {} ({}): indoor={} outdoor={} fixtures={} style={} replaced={} skipped missing_item={} missing_catalog={} capacity={} fixture_missing_item={} fixture_missing_data={} fixture_wrong_category={}. Re-enter the estate/ward to refresh visuals.",
         preset_path
             .path
             .strip_prefix(&preset_path.root)
@@ -1322,10 +1361,18 @@ async fn apply_remake_place_preset_to_estate(
         housing_preset_scope_label(scope),
         import_rows.indoor_imported,
         import_rows.outdoor_imported,
+        fixture_updates.fixture_updates.len(),
+        fixture_updates
+            .renovation_row_id
+            .map(|row_id| row_id.to_string())
+            .unwrap_or_else(|| "none".to_string()),
         deleted,
         import_rows.skipped_missing_item_id,
         import_rows.skipped_missing_catalog,
         import_rows.skipped_capacity,
+        fixture_updates.skipped_missing_item_id,
+        fixture_updates.skipped_missing_item_data,
+        fixture_updates.skipped_wrong_category,
     ))
 }
 
