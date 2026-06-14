@@ -1117,6 +1117,7 @@ pub async fn server_main_loop(
                     zone_id,
                     position,
                     rotation,
+                    housing_plot_location,
                     city_state_opening,
                 ) => {
                     tracing::info!("Player {from_id:?} is now spawning into {zone_id}....");
@@ -1154,6 +1155,24 @@ pub async fn server_main_loop(
                             exit_position = Position(translation);
                             exit_rotation = euler_to_direction(rotation.to_euler(EulerRot::XYZ));
                         } else {
+                            exit_position = position;
+                            exit_rotation = rotation;
+                        }
+                    } else if let Some(plot_location) = housing_plot_location
+                        && plot_location.territory_type_id == zone_id
+                    {
+                        if let Some((position, rotation)) = instance
+                            .zone
+                            .housing_plot_exit_transform(plot_location.raw_plot_index)
+                        {
+                            exit_position = position;
+                            exit_rotation = rotation;
+                        } else {
+                            tracing::warn!(
+                                zone_id,
+                                raw_plot_index = plot_location.raw_plot_index,
+                                "Failed to find cached housing plot entrance for login; using persisted fallback transform"
+                            );
                             exit_position = position;
                             exit_rotation = rotation;
                         }

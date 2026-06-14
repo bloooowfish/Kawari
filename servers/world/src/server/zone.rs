@@ -70,6 +70,8 @@ pub struct MapRange {
     pub trigger_box_shape: TriggerBoxShape,
     /// Position of this range in the world.
     pub position: Vec3,
+    /// Facing direction derived from this range's transform.
+    pub rotation: f32,
     /// Relative scale of this range.
     pub scale: Vec3,
     /// Whether this map range represents a sanctuary.
@@ -89,7 +91,10 @@ pub struct MapRange {
 #[derive(Debug)]
 struct HousingPlot {
     entrance_position: Vec3,
+    entrance_rotation: f32,
 }
+
+const HOUSING_PLOT_EXIT_FORWARD_DISTANCE: f32 = 8.0;
 
 /// Represents a loaded zone
 #[derive(Default, Debug)]
@@ -227,8 +232,9 @@ impl Zone {
                     }
 
                     for object in &layer.objects {
-                        let (scale, _, translation) =
+                        let (scale, rotation, translation) =
                             Affine3A::from(object.transform).to_scale_rotation_translation();
+                        let direction = euler_to_direction(rotation.to_euler(EulerRot::XYZ));
 
                         if let LayerEntryData::EventNPC(npc) = &object.data {
                             zone.cached_npc_base_ids.insert(
@@ -240,6 +246,7 @@ impl Zone {
                             zone.map_ranges.push(MapRange {
                                 trigger_box_shape: map_range.parent_data.trigger_box_shape,
                                 position: translation,
+                                rotation: direction,
                                 scale,
                                 sanctuary: map_range.rest_bonus_enabled,
                                 duel: false,
@@ -257,6 +264,7 @@ impl Zone {
                             zone.map_ranges.push(MapRange {
                                 trigger_box_shape: event_range.parent_data.trigger_box_shape,
                                 position: translation,
+                                rotation: direction,
                                 scale,
                                 sanctuary: false,
                                 // This is guesswork since there's only one dueling location in-game
@@ -395,6 +403,7 @@ impl Zone {
 
                     zone.cached_housing_plots.push(HousingPlot {
                         entrance_position: map_range.position,
+                        entrance_rotation: map_range.rotation,
                     });
                 }
             }
@@ -516,6 +525,19 @@ impl Zone {
         }
 
         None
+    }
+
+    pub fn housing_plot_entrance_transform(&self, raw_plot_index: u8) -> Option<(Position, f32)> {
+        self.cached_housing_plots
+            .get(usize::from(raw_plot_index))
+            .map(|plot| (Position(plot.entrance_position), plot.entrance_rotation))
+    }
+
+    pub fn housing_plot_exit_transform(&self, raw_plot_index: u8) -> Option<(Position, f32)> {
+        self.housing_plot_entrance_transform(raw_plot_index)
+            .map(|(position, rotation)| {
+                housing_plot_exit_transform_from_entrance(position, rotation)
+            })
     }
 
     /// Returns a list of event objects to spawn by default. If `explorer_mode`, replaces the shortcut object.
@@ -1062,6 +1084,29 @@ pub fn change_zone_to_player(
     );
 }
 
+fn housing_plot_exit_transform_from_entrance(
+    entrance_position: Position,
+    entrance_rotation: f32,
+) -> (Position, f32) {
+    (
+        nudge_position_forward(
+            entrance_position,
+            entrance_rotation,
+            HOUSING_PLOT_EXIT_FORWARD_DISTANCE,
+        ),
+        entrance_rotation,
+    )
+}
+
+fn nudge_position_forward(position: Position, rotation: f32, distance: f32) -> Position {
+    let angle = rotation + std::f32::consts::FRAC_PI_2;
+    Position(Vec3::new(
+        position.0.x - distance * angle.cos(),
+        position.0.y,
+        position.0.z + distance * angle.sin(),
+    ))
+}
+
 /// Sends the needed information to ZoneConnection for a zone change.
 fn do_change_zone(
     network: &mut NetworkState,
@@ -1187,6 +1232,68 @@ pub fn handle_zone_messages(
                 needs_init_zone,
                 *new_position,
                 *new_rotation,
+                *from_id,
+                warp_type,
+            );
+
+            true
+        }
+        ToServer::ChangeZoneToHousingPlot(
+            from_id,
+            actor_id,
+            plot_location,
+            fallback_position,
+            fallback_rotation,
+            warp_type_info,
+        ) => {
+            tracing::info!(
+                "{from_id:?} is requesting to go to housing plot {} in zone {}",
+                plot_location.raw_plot_index,
+                plot_location.territory_type_id
+            );
+
+            let mut data = data.lock();
+            let mut network = network.lock();
+            let mut game_data = game_data.lock();
+
+            let (warp_type, param4, hide_character, unk1) =
+                if let Some((w_type, param, hide, unk)) = warp_type_info {
+                    (*w_type, *param, *hide, *unk)
+                } else {
+                    (WarpType::Normal, 0, 0, 0)
+                };
+
+            let (target_instance, needs_init_zone) = begin_change_zone(
+                &mut data,
+                &mut network,
+                &mut game_data,
+                Some(plot_location.territory_type_id),
+                *actor_id,
+                warp_type,
+                param4,
+                hide_character,
+                unk1,
+            );
+
+            let (exit_position, exit_rotation) = target_instance
+                .zone
+                .housing_plot_exit_transform(plot_location.raw_plot_index)
+                .map(|(position, rotation)| (Some(position), Some(rotation)))
+                .unwrap_or_else(|| {
+                    tracing::warn!(
+                        zone_id = plot_location.territory_type_id,
+                        raw_plot_index = plot_location.raw_plot_index,
+                        "Failed to find cached housing plot entrance; using fallback exit transform"
+                    );
+                    (*fallback_position, *fallback_rotation)
+                });
+
+            do_change_zone(
+                &mut network,
+                target_instance,
+                needs_init_zone,
+                exit_position,
+                exit_rotation,
                 *from_id,
                 warp_type,
             );
@@ -1602,5 +1709,79 @@ pub fn handle_zone_messages(
             true
         }
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn assert_position_close(actual: Position, expected: Vec3) {
+        const EPSILON: f32 = 0.0001;
+        assert!(
+            (actual.0.x - expected.x).abs() < EPSILON,
+            "x mismatch: actual={} expected={}",
+            actual.0.x,
+            expected.x
+        );
+        assert!(
+            (actual.0.y - expected.y).abs() < EPSILON,
+            "y mismatch: actual={} expected={}",
+            actual.0.y,
+            expected.y
+        );
+        assert!(
+            (actual.0.z - expected.z).abs() < EPSILON,
+            "z mismatch: actual={} expected={}",
+            actual.0.z,
+            expected.z
+        );
+    }
+
+    #[test]
+    fn housing_plot_entrance_transform_returns_cached_position_and_rotation() {
+        let mut zone = Zone::default();
+        zone.cached_housing_plots.push(HousingPlot {
+            entrance_position: Vec3::new(1.0, 2.0, 3.0),
+            entrance_rotation: 1.25,
+        });
+
+        assert_eq!(
+            zone.housing_plot_entrance_transform(0),
+            Some((Position(Vec3::new(1.0, 2.0, 3.0)), 1.25))
+        );
+        assert_eq!(zone.housing_plot_entrance_transform(1), None);
+    }
+
+    #[test]
+    fn housing_plot_exit_transform_nudges_eight_forward_from_entrance() {
+        let mut zone = Zone::default();
+        zone.cached_housing_plots.push(HousingPlot {
+            entrance_position: Vec3::new(1.0, 2.0, 3.0),
+            entrance_rotation: 0.0,
+        });
+
+        let (position, rotation) = zone
+            .housing_plot_exit_transform(0)
+            .expect("cached housing plot should have an exit transform");
+
+        assert_position_close(position, Vec3::new(1.0, 2.0, 11.0));
+        assert_eq!(rotation, 0.0);
+    }
+
+    #[test]
+    fn housing_plot_exit_transform_uses_nudge_forward_rotation_formula() {
+        let mut zone = Zone::default();
+        zone.cached_housing_plots.push(HousingPlot {
+            entrance_position: Vec3::new(1.0, 2.0, 3.0),
+            entrance_rotation: std::f32::consts::FRAC_PI_2,
+        });
+
+        let (position, rotation) = zone
+            .housing_plot_exit_transform(0)
+            .expect("cached housing plot should have an exit transform");
+
+        assert_position_close(position, Vec3::new(9.0, 2.0, 3.0));
+        assert_eq!(rotation, std::f32::consts::FRAC_PI_2);
     }
 }

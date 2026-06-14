@@ -33,7 +33,7 @@ use kawari::{
 
 use super::{
     WorldDatabase,
-    common::{ClientId, ServerHandle},
+    common::{ClientId, HousingPlotLocation, ServerHandle},
     inventory::{BuyBackList, HousingInventory, Inventory, Item},
 };
 
@@ -190,6 +190,7 @@ pub struct ZoneConnection {
     pub pending_housing_indoor_furniture_list_tail: bool,
     pub pending_housing_indoor_finish_loading: bool,
     pub pending_housing_indoor_furniture_object_overlay_sync: bool,
+    pub pending_housing_login_exit_plot_location: Option<HousingPlotLocation>,
 
     pub obsfucation_data: ObsfucationData,
 

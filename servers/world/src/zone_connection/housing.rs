@@ -14,7 +14,7 @@ use crate::inventory::{
     interior_storeroom_containers,
 };
 use crate::{
-    HousingEstate, HousingFurniture, ItemInfoQuery, MAX_APARTMENT_ROOM_NUMBER,
+    HousingEstate, HousingFurniture, HousingPlotLocation, ItemInfoQuery, MAX_APARTMENT_ROOM_NUMBER,
     TEST_HOUSING_DIVISION, TEST_HOUSING_PLOT_INDEX, TEST_HOUSING_WARD_INDEX, ToServer,
     WorldDatabase,
     lua::{HousingExteriorColorField, HousingExteriorField, HousingInteriorField},
@@ -66,6 +66,13 @@ pub struct PersistedHousingItemMove {
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct HousingLoginExitLocation {
     zone_id: u16,
+    position: Position,
+    rotation: f32,
+    plot_location: Option<HousingPlotLocation>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct HousingEntryTransform {
     position: Position,
     rotation: f32,
 }
@@ -227,6 +234,7 @@ impl ZoneConnection {
         &mut self,
         intended_use: TerritoryIntendedUse,
     ) -> bool {
+        self.pending_housing_login_exit_plot_location = None;
         let active_estate = self.active_housing_estate.clone();
         let estate = {
             let mut database = self.database.lock();
@@ -255,6 +263,7 @@ impl ZoneConnection {
         self.player_data.volatile.zone_id = location.zone_id as i32;
         self.player_data.volatile.position = location.position;
         self.player_data.volatile.rotation = location.rotation as f64;
+        self.pending_housing_login_exit_plot_location = location.plot_location;
         true
     }
 
@@ -1157,10 +1166,11 @@ impl ZoneConnection {
     }
 
     pub async fn reload_housing_interior_pattern_territory(&mut self, territory_type_id: u16) {
+        let entry = housing_indoor_entry_transform(false);
         self.change_zone(
             territory_type_id,
-            Some(housing_indoor_front_door_position()),
-            Some(180.0),
+            Some(entry.position),
+            Some(entry.rotation),
             None,
         )
         .await;
@@ -2441,10 +2451,9 @@ impl ZoneConnection {
             return;
         };
 
-        let position = housing_indoor_front_door_position();
-        let rotation = 180.0;
-        self.player_data.volatile.position = position;
-        self.player_data.volatile.rotation = rotation as f64;
+        let entry = housing_indoor_entry_transform(false);
+        self.player_data.volatile.position = entry.position;
+        self.player_data.volatile.rotation = entry.rotation as f64;
 
         tracing::debug!(
             content_id = self.player_data.character.content_id,
@@ -2454,8 +2463,8 @@ impl ZoneConnection {
 
         self.send_ipc_self(ServerZoneIpcSegment::new(ServerZoneIpcData::ActorSetPos(
             ActorSetPos {
-                position,
-                rotation,
+                position: entry.position,
+                rotation: entry.rotation,
                 ..Default::default()
             },
         )))
@@ -2477,7 +2486,7 @@ impl ZoneConnection {
 
         self.set_active_housing_estate_from_row(&estate, true);
 
-        let position = housing_indoor_front_door_position();
+        let entry = housing_indoor_entry_transform(false);
         let indoor_territory_type_id = self.housing_indoor_territory_type_id_for_estate(&estate);
         tracing::debug!(
             content_id = self.player_data.character.content_id,
@@ -2487,8 +2496,13 @@ impl ZoneConnection {
             "Entering test house interior"
         );
 
-        self.change_zone(indoor_territory_type_id, Some(position), Some(180.0), None)
-            .await;
+        self.change_zone(
+            indoor_territory_type_id,
+            Some(entry.position),
+            Some(entry.rotation),
+            None,
+        )
+        .await;
     }
 
     pub async fn enter_test_apartment(&mut self, room_number: u16) {
@@ -2531,10 +2545,11 @@ impl ZoneConnection {
             "Entering test apartment interior"
         );
 
+        let entry = housing_indoor_entry_transform(true);
         self.change_zone(
             TEST_APARTMENT_INDOOR_TERRITORY_TYPE_ID,
-            Some(Position(Vec3::ZERO)),
-            Some(0.0),
+            Some(entry.position),
+            Some(entry.rotation),
             None,
         )
         .await;
@@ -2571,20 +2586,28 @@ impl ZoneConnection {
         };
 
         let position = housing_outdoor_exit_position(&estate);
+        let rotation = housing_outdoor_exit_rotation(&estate);
+        let plot_location = housing_outdoor_exit_plot_location(&estate);
         tracing::debug!(
             content_id = self.player_data.character.content_id,
             land_ident = estate.land_ident,
             territory_type_id = estate.territory_type_id,
+            raw_plot_index = plot_location.map(|location| location.raw_plot_index),
             "Exiting test house to housing outdoor territory"
         );
 
-        self.change_zone(
-            estate.territory_type_id as u16,
-            Some(position),
-            Some(housing_outdoor_exit_rotation(&estate)),
-            None,
-        )
-        .await;
+        if let Some(plot_location) = plot_location {
+            self.change_zone_to_housing_plot(plot_location, Some(position), Some(rotation), None)
+                .await;
+        } else {
+            self.change_zone(
+                estate.territory_type_id as u16,
+                Some(position),
+                Some(rotation),
+                None,
+            )
+            .await;
+        }
     }
 
     fn housing_transfer_item(&self, container: ContainerType, slot: u16) -> Option<Item> {
@@ -3963,8 +3986,18 @@ fn placed_container_for_flat_slot(flat_slot: u16, indoors: bool) -> Option<(Cont
     }
 }
 
-fn housing_indoor_front_door_position() -> Position {
-    Position(Vec3::new(-0.25, -0.39, 10.0))
+fn housing_indoor_entry_transform(is_apartment: bool) -> HousingEntryTransform {
+    if is_apartment {
+        return HousingEntryTransform {
+            position: Position(Vec3::ZERO),
+            rotation: 0.0,
+        };
+    }
+
+    HousingEntryTransform {
+        position: Position(Vec3::new(-0.25, -0.39, 5.0)),
+        rotation: 180.0,
+    }
 }
 
 fn housing_interior_pattern_area_allows_request(intended_use: TerritoryIntendedUse) -> bool {
@@ -4192,11 +4225,23 @@ pub(super) fn update_interior_json_renovation_row_id(
 }
 
 fn housing_outdoor_exit_position(_estate: &HousingEstate) -> Position {
-    Position(Vec3::new(137.022, 23.5, -0.83))
+    Position(Vec3::new(140.0, 23.5, -0.83))
 }
 
 fn housing_outdoor_exit_rotation(_estate: &HousingEstate) -> f32 {
     0.0
+}
+
+fn housing_outdoor_exit_plot_location(estate: &HousingEstate) -> Option<HousingPlotLocation> {
+    if estate.is_apartment || estate.room_number != 0 {
+        return None;
+    }
+
+    let location = outdoor_housing_location_from_estate(estate)?;
+    Some(HousingPlotLocation {
+        territory_type_id: location.territory_type_id,
+        raw_plot_index: location.raw_plot_index,
+    })
 }
 
 fn housing_indoor_login_exit_location(
@@ -4212,6 +4257,7 @@ fn housing_indoor_login_exit_location(
         zone_id: estate.territory_type_id.clamp(0, u16::MAX as i32) as u16,
         position: housing_outdoor_exit_position(estate),
         rotation: housing_outdoor_exit_rotation(estate),
+        plot_location: housing_outdoor_exit_plot_location(estate),
     })
 }
 
@@ -5397,17 +5443,21 @@ mod tests {
     }
 
     #[test]
-    fn housing_indoor_front_door_position_matches_entry_point() {
-        let position = housing_indoor_front_door_position();
+    fn housing_indoor_entry_transform_keeps_house_and_apartment_defaults_separate() {
+        let house = housing_indoor_entry_transform(false);
+        let apartment = housing_indoor_entry_transform(true);
 
-        assert_eq!(position, Position(Vec3::new(-0.25, -0.39, 10.0)));
+        assert_eq!(house.position, Position(Vec3::new(-0.25, -0.39, 5.0)));
+        assert_eq!(house.rotation, 180.0);
+        assert_eq!(apartment.position, Position(Vec3::ZERO));
+        assert_eq!(apartment.rotation, 0.0);
     }
 
     #[test]
     fn housing_outdoor_exit_position_matches_large_plot_front_door() {
         let position = housing_outdoor_exit_position(&estate(house_id(5, 0, false), 0x0B, false));
 
-        assert_eq!(position, Position(Vec3::new(137.022, 23.5, -0.83)));
+        assert_eq!(position, Position(Vec3::new(140.0, 23.5, -0.83)));
     }
 
     #[test]
@@ -5415,6 +5465,36 @@ mod tests {
         let rotation = housing_outdoor_exit_rotation(&estate(house_id(5, 0, false), 0x0B, false));
 
         assert_eq!(rotation, 0.0);
+    }
+
+    #[test]
+    fn housing_outdoor_exit_plot_location_uses_estate_raw_landset_entry() {
+        let main = ward_estate(5, 0, TEST_HOUSING_LAND_FLAGS);
+        let subdivision = ward_estate(5, 1, TEST_HOUSING_LAND_FLAGS);
+
+        let main_location = housing_outdoor_exit_plot_location(&main)
+            .expect("main division estate should resolve to a plot entrance request");
+        let subdivision_location = housing_outdoor_exit_plot_location(&subdivision)
+            .expect("subdivision estate should resolve to a plot entrance request");
+
+        assert_eq!(main_location.territory_type_id, 340);
+        assert_eq!(main_location.raw_plot_index, 5);
+        assert_eq!(subdivision_location.territory_type_id, 340);
+        assert_eq!(subdivision_location.raw_plot_index, 35);
+    }
+
+    #[test]
+    fn housing_outdoor_exit_plot_location_rejects_apartments_and_invalid_plots() {
+        let mut apartment = ward_estate(0, 0, TEST_HOUSING_LAND_FLAGS);
+        apartment.is_apartment = true;
+        apartment.room_number = 1;
+
+        let invalid_division = ward_estate(5, 2, TEST_HOUSING_LAND_FLAGS);
+        let invalid_plot = ward_estate(30, 0, TEST_HOUSING_LAND_FLAGS);
+
+        assert_eq!(housing_outdoor_exit_plot_location(&apartment), None);
+        assert_eq!(housing_outdoor_exit_plot_location(&invalid_division), None);
+        assert_eq!(housing_outdoor_exit_plot_location(&invalid_plot), None);
     }
 
     #[test]
@@ -5427,7 +5507,7 @@ mod tests {
                 .expect("housing indoor login should be normalized to the outside of the house");
 
         assert_eq!(location.zone_id, 340);
-        assert_eq!(location.position, Position(Vec3::new(137.022, 23.5, -0.83)));
+        assert_eq!(location.position, Position(Vec3::new(140.0, 23.5, -0.83)));
         assert_eq!(location.rotation, 0.0);
     }
 

@@ -236,6 +236,7 @@ async fn initial_setup(
                     pending_housing_indoor_furniture_list_tail: false,
                     pending_housing_indoor_finish_loading: false,
                     pending_housing_indoor_furniture_object_overlay_sync: false,
+                    pending_housing_login_exit_plot_location: None,
                     obsfucation_data: ObsfucationData::default(),
                     queued_content: None,
                     conditions: Conditions::default(),
@@ -1010,6 +1011,7 @@ async fn process_packet(
                                     connection.player_data.volatile.zone_id as u16,
                                     connection.player_data.volatile.position,
                                     connection.player_data.volatile.rotation as f32,
+                                    connection.pending_housing_login_exit_plot_location.take(),
                                     if connection.player_data.unlock.cutscene_seen.contains(2) {
                                         None
                                     } else {
