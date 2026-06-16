@@ -33,7 +33,7 @@ impl ZoneConnection {
             message: message.message,
             ..Default::default()
         }));
-        self.send_ipc_self(ipc).await;
+        Box::pin(self.send_ipc_self(ipc)).await;
     }
 
     pub async fn send_notice(&mut self, message: &str) {
@@ -44,7 +44,7 @@ impl ZoneConnection {
             },
         ));
 
-        self.send_ipc_self(ipc).await;
+        Box::pin(self.send_ipc_self(ipc)).await;
     }
 
     pub async fn run_gm_command(

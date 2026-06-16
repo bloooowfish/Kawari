@@ -626,14 +626,21 @@ impl ZoneConnection {
                     };
 
                     match resolve_remake_place_preset_path(path).and_then(|preset_path| {
-                        apply_remake_place_preset_to_estate(self, &estate, preset_path, *scope)
+                        apply_remake_place_preset_to_estate(
+                            self,
+                            &estate,
+                            preset_path,
+                            *scope,
+                            *reload,
+                        )
                     }) {
                         Ok(outcome) => {
                             self.last_housing_preset = Some(LastHousingPreset {
                                 path: outcome.path,
                                 scope: *scope,
                             });
-                            self.send_notice(&outcome.summary).await;
+                            tracing::debug!(summary = %outcome.summary, "Applied ReMakePlace housing preset");
+                            self.send_notice(&outcome.notice).await;
                             if *reload {
                                 reload_housing_after_preset(self, *scope).await;
                             }
@@ -649,14 +656,21 @@ impl ZoneConnection {
                     };
 
                     match resolve_latest_remake_place_preset_path().and_then(|preset_path| {
-                        apply_remake_place_preset_to_estate(self, &estate, preset_path, *scope)
+                        apply_remake_place_preset_to_estate(
+                            self,
+                            &estate,
+                            preset_path,
+                            *scope,
+                            *reload,
+                        )
                     }) {
                         Ok(outcome) => {
                             self.last_housing_preset = Some(LastHousingPreset {
                                 path: outcome.path,
                                 scope: *scope,
                             });
-                            self.send_notice(&outcome.summary).await;
+                            tracing::debug!(summary = %outcome.summary, "Applied latest ReMakePlace housing preset");
+                            self.send_notice(&outcome.notice).await;
                             if *reload {
                                 reload_housing_after_preset(self, *scope).await;
                             }
@@ -681,14 +695,21 @@ impl ZoneConnection {
                     let scope = last_preset.scope;
                     match resolve_remake_place_preset_path(&last_preset.path.to_string_lossy())
                         .and_then(|preset_path| {
-                            apply_remake_place_preset_to_estate(self, &estate, preset_path, scope)
+                            apply_remake_place_preset_to_estate(
+                                self,
+                                &estate,
+                                preset_path,
+                                scope,
+                                *reload,
+                            )
                         }) {
                         Ok(outcome) => {
                             self.last_housing_preset = Some(LastHousingPreset {
                                 path: outcome.path,
                                 scope,
                             });
-                            self.send_notice(&outcome.summary).await;
+                            tracing::debug!(summary = %outcome.summary, "Repeated ReMakePlace housing preset");
+                            self.send_notice(&outcome.notice).await;
                             if *reload {
                                 reload_housing_after_preset(self, scope).await;
                             }
@@ -697,6 +718,11 @@ impl ZoneConnection {
                     }
                 }
                 LuaTask::CheckHousingPreset { path, scope } => {
+                    tracing::debug!(
+                        path = %path,
+                        scope = housing_preset_scope_label(*scope),
+                        "Checking ReMakePlace housing preset from explicit path"
+                    );
                     let Some(estate) = self.current_or_owned_housing_estate() else {
                         self.send_notice("No local housing estate found to check the preset.")
                             .await;
@@ -711,6 +737,10 @@ impl ZoneConnection {
                     }
                 }
                 LuaTask::CheckLatestHousingPreset { scope } => {
+                    tracing::debug!(
+                        scope = housing_preset_scope_label(*scope),
+                        "Checking latest ReMakePlace housing preset"
+                    );
                     let Some(estate) = self.current_or_owned_housing_estate() else {
                         self.send_notice("No local housing estate found to check the preset.")
                             .await;
@@ -725,6 +755,7 @@ impl ZoneConnection {
                     }
                 }
                 LuaTask::CheckRepeatedHousingPreset {} => {
+                    tracing::debug!("Checking repeated ReMakePlace housing preset");
                     let Some(estate) = self.current_or_owned_housing_estate() else {
                         self.send_notice("No local housing estate found to check the preset.")
                             .await;
@@ -1422,6 +1453,7 @@ struct RemakePlacePresetAnalysis {
 struct RemakePlacePresetApplyOutcome {
     path: PathBuf,
     summary: String,
+    notice: String,
 }
 
 fn apply_remake_place_preset_to_estate(
@@ -1429,12 +1461,29 @@ fn apply_remake_place_preset_to_estate(
     estate: &HousingEstate,
     preset_path: RemakePlacePresetPath,
     scope: HousingPresetScope,
+    reload: bool,
 ) -> Result<RemakePlacePresetApplyOutcome, String> {
+    tracing::debug!(
+        path = %display_remake_place_preset_path(&preset_path),
+        land_ident = estate.land_ident,
+        scope = housing_preset_scope_label(scope),
+        "Analyzing ReMakePlace housing preset"
+    );
     let analysis = analyze_remake_place_preset_for_estate(connection, estate, preset_path, scope)?;
     let preset_path = analysis.preset_path;
     let import_rows = analysis.import_rows;
     let fixture_updates = analysis.fixture_updates;
 
+    tracing::debug!(
+        path = %display_remake_place_preset_path(&preset_path),
+        land_ident = estate.land_ident,
+        rows = import_rows.rows.len(),
+        indoor = import_rows.indoor_imported,
+        outdoor = import_rows.outdoor_imported,
+        fixtures = fixture_updates.fixture_updates.len(),
+        style = fixture_updates.renovation_row_id.unwrap_or_default(),
+        "Persisting ReMakePlace housing preset"
+    );
     let deleted = {
         let mut database = connection.database.lock();
         let deleted = database
@@ -1474,6 +1523,12 @@ fn apply_remake_place_preset_to_estate(
         deleted
     };
     connection.clear_housing_furniture_reset_cache();
+    tracing::debug!(
+        path = %display_remake_place_preset_path(&preset_path),
+        land_ident = estate.land_ident,
+        deleted,
+        "Persisted ReMakePlace housing preset"
+    );
 
     let path = preset_path.path.clone();
     let summary = format_remake_place_preset_summary(
@@ -1486,8 +1541,26 @@ fn apply_remake_place_preset_to_estate(
         Some(deleted),
         "Use !housing reload or re-enter the estate/ward to refresh visuals.",
     );
+    let notice = format_remake_place_preset_notice(
+        "Applied",
+        &preset_path,
+        scope,
+        &import_rows,
+        &fixture_updates,
+        Some(deleted),
+        reload,
+    );
+    tracing::debug!(
+        path = %display_remake_place_preset_path(&preset_path),
+        summary_len = summary.len(),
+        "Built ReMakePlace housing preset summary"
+    );
 
-    Ok(RemakePlacePresetApplyOutcome { path, summary })
+    Ok(RemakePlacePresetApplyOutcome {
+        path,
+        summary,
+        notice,
+    })
 }
 
 fn check_remake_place_preset_for_estate(
@@ -1496,7 +1569,23 @@ fn check_remake_place_preset_for_estate(
     preset_path: RemakePlacePresetPath,
     scope: HousingPresetScope,
 ) -> Result<String, String> {
+    tracing::debug!(
+        path = %display_remake_place_preset_path(&preset_path),
+        land_ident = estate.land_ident,
+        scope = housing_preset_scope_label(scope),
+        "Analyzing ReMakePlace housing preset check"
+    );
     let analysis = analyze_remake_place_preset_for_estate(connection, estate, preset_path, scope)?;
+    tracing::debug!(
+        path = %display_remake_place_preset_path(&analysis.preset_path),
+        land_ident = estate.land_ident,
+        rows = analysis.import_rows.rows.len(),
+        indoor = analysis.import_rows.indoor_imported,
+        outdoor = analysis.import_rows.outdoor_imported,
+        fixtures = analysis.fixture_updates.fixture_updates.len(),
+        style = analysis.fixture_updates.renovation_row_id.unwrap_or_default(),
+        "Checked ReMakePlace housing preset"
+    );
 
     Ok(format_remake_place_preset_summary(
         "Checked",
@@ -1582,6 +1671,37 @@ fn format_remake_place_preset_summary(
     )
 }
 
+fn format_remake_place_preset_notice(
+    action: &str,
+    preset_path: &RemakePlacePresetPath,
+    scope: HousingPresetScope,
+    import_rows: &RemakePlaceImportRows,
+    fixture_updates: &RemakePlaceInteriorFixtureUpdates,
+    replaced: Option<usize>,
+    reload: bool,
+) -> String {
+    let refresh = if reload {
+        "Reloading housing."
+    } else {
+        "Use !housing reload to refresh."
+    };
+    format!(
+        "{action} ReMakePlace preset {} ({}): indoor={} outdoor={} fixtures={} style={} replaced={}. {refresh}",
+        display_remake_place_preset_path(preset_path),
+        housing_preset_scope_label(scope),
+        import_rows.indoor_imported,
+        import_rows.outdoor_imported,
+        fixture_updates.fixture_updates.len(),
+        fixture_updates
+            .renovation_row_id
+            .map(|row_id| row_id.to_string())
+            .unwrap_or_else(|| "none".to_string()),
+        replaced
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "n/a".to_string()),
+    )
+}
+
 fn display_remake_place_preset_path(preset_path: &RemakePlacePresetPath) -> String {
     preset_path
         .path
@@ -1592,6 +1712,10 @@ fn display_remake_place_preset_path(preset_path: &RemakePlacePresetPath) -> Stri
 }
 
 async fn reload_housing_after_preset(connection: &mut ZoneConnection, scope: HousingPresetScope) {
+    tracing::debug!(
+        scope = housing_preset_scope_label(scope),
+        "Reloading housing after ReMakePlace preset"
+    );
     if matches!(scope, HousingPresetScope::Exterior) {
         connection.exit_test_house().await;
     } else {
@@ -1670,13 +1794,19 @@ fn apply_housing_interior_fixture_update(
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::{
         HousingFixtureUpdateResult, apply_housing_exterior_color_update,
         apply_housing_exterior_fixture_update, apply_housing_interior_fixture_update,
+        format_remake_place_preset_notice,
     };
     use crate::{
         database::WorldDatabase,
         lua::{HousingExteriorColorField, HousingExteriorField, HousingInteriorField, LuaTask},
+        zone_connection::remake_place::{
+            RemakePlaceImportRows, RemakePlaceInteriorFixtureUpdates, RemakePlacePresetPath,
+        },
     };
     use kawari::common::HouseId;
 
@@ -1767,5 +1897,47 @@ mod tests {
             value: 123,
         };
         run_malformed_update_task(task, "{");
+    }
+
+    #[test]
+    fn remake_place_preset_notice_stays_short_for_large_imports() {
+        let preset_path = RemakePlacePresetPath {
+            root: PathBuf::from(r"D:\ReMakePlace_Latest\MakePlace\Save"),
+            path: PathBuf::from(r"D:\ReMakePlace_Latest\MakePlace\Save\CL03 Meridian Neue L.json"),
+        };
+        let import_rows = RemakePlaceImportRows {
+            rows: Vec::new(),
+            indoor_imported: 596,
+            outdoor_imported: 0,
+            skipped_missing_item_id: 0,
+            skipped_missing_catalog: 0,
+            skipped_capacity: 0,
+        };
+        let fixture_updates = RemakePlaceInteriorFixtureUpdates {
+            renovation_row_id: Some(18),
+            fixture_updates: vec![
+                (HousingInteriorField::GroundChandelier, 1),
+                (HousingInteriorField::TopChandelier, 2),
+            ],
+            ..Default::default()
+        };
+
+        let notice = format_remake_place_preset_notice(
+            "Applied",
+            &preset_path,
+            crate::lua::HousingPresetScope::Interior,
+            &import_rows,
+            &fixture_updates,
+            Some(596),
+            true,
+        );
+
+        assert!(notice.len() < 180, "{notice}");
+        assert!(notice.contains("Applied ReMakePlace preset CL03 Meridian Neue L.json"));
+        assert!(notice.contains("indoor=596"));
+        assert!(notice.contains("fixtures=2"));
+        assert!(notice.contains("style=18"));
+        assert!(notice.contains("replaced=596"));
+        assert!(notice.contains("Reloading housing"));
     }
 }

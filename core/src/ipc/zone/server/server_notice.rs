@@ -33,3 +33,63 @@ pub struct ServerNoticeMessage {
     #[bw(map = write_string)]
     pub message: String,
 }
+
+#[cfg(test)]
+mod tests {
+    use std::io::Cursor;
+
+    use binrw::BinWrite;
+
+    use super::super::{ServerZoneIpcData, ServerZoneIpcSegment};
+    use super::*;
+    use crate::packet::ReadWriteIpcSegment;
+
+    fn preset_summary_like_message() -> String {
+        format!(
+            "Applied ReMakePlace preset {} to {} ({}): indoor={} outdoor={} fixtures={} style={} replaced={} skipped missing_item={} missing_catalog={} capacity={} fixture_missing_item={} fixture_missing_data={} fixture_wrong_category={}. {}",
+            r#"D:\ReMakePlace_Latest\MakePlace\Save\CL03 Meridian Neue L.json"#,
+            "Cha Min's Test Estate",
+            "interior",
+            596,
+            0,
+            9,
+            18,
+            596,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            "Use !housing reload or re-enter the estate/ward to refresh visuals.",
+        )
+    }
+
+    #[test]
+    fn server_notice_message_writes_fixed_size_with_preset_summary_text() {
+        let message = ServerNoticeMessage {
+            flags: ServerNoticeFlags::CHAT_LOG,
+            message: preset_summary_like_message(),
+        };
+        let mut cursor = Cursor::new(Vec::new());
+
+        message.write_le(&mut cursor).unwrap();
+
+        assert_eq!(cursor.into_inner().len(), 776);
+    }
+
+    #[test]
+    fn server_notice_ipc_writes_expected_size_with_preset_summary_text() {
+        let ipc = ServerZoneIpcSegment::new(ServerZoneIpcData::ServerNoticeMessage(
+            ServerNoticeMessage {
+                flags: ServerNoticeFlags::CHAT_LOG,
+                message: preset_summary_like_message(),
+            },
+        ));
+        let mut cursor = Cursor::new(Vec::new());
+
+        ipc.write_le(&mut cursor).unwrap();
+
+        assert_eq!(cursor.into_inner().len(), ipc.calc_size() as usize);
+    }
+}

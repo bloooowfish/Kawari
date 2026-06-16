@@ -1860,6 +1860,40 @@ mod tests {
     }
 
     #[test]
+    fn replace_housing_placed_furniture_handles_large_interior_presets() {
+        let mut db = test_db();
+        let estate = db.ensure_test_estate(100, "Tester", 67);
+        let mut rows = Vec::new();
+
+        for slot in 0..600 {
+            rows.push(HousingFurniture {
+                land_ident: estate.land_ident,
+                container_type: container_type_to_i32(interior_placed_containers()[slot / 50]),
+                slot: (slot % 50) as i32,
+                item_id: 1000 + slot as i64,
+                catalog_id: slot as i32,
+                placed: true,
+                ..Default::default()
+            });
+        }
+
+        db.replace_housing_placed_furniture_for_estate(estate.land_ident, true, false, &rows)
+            .unwrap();
+
+        let imported = db.list_housing_furniture(estate.land_ident, true);
+
+        assert_eq!(imported.len(), 600);
+        assert_eq!(imported.first().map(|row| row.slot), Some(0));
+        assert_eq!(imported.last().map(|row| row.slot), Some(49));
+        assert_eq!(
+            imported.last().map(|row| row.container_type),
+            Some(container_type_to_i32(
+                ContainerType::HousingInteriorPlacedItems12
+            ))
+        );
+    }
+
+    #[test]
     fn delete_housing_estate_and_furniture_removes_both() {
         let mut db = test_db();
         let estate = db.ensure_test_estate(100, "Tester", 67);
