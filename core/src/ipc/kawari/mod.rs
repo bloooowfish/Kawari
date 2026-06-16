@@ -453,7 +453,7 @@ mod tests {
     }
 
     #[test]
-    fn custom_ipc_sizes_housing_import_path_accepts_bare_and_prefixed_export_paths() {
+    fn housing_import_path_accepts_allowed_export_paths() {
         assert_eq!(
             validate_housing_import_path_for_ipc("estate-123.json")
                 .expect("bare export file should be normalized"),
@@ -467,7 +467,7 @@ mod tests {
     }
 
     #[test]
-    fn custom_ipc_sizes_housing_import_path_rejects_absolute_and_parent_traversal() {
+    fn housing_import_path_rejects_unsafe_paths() {
         for path in [
             "/tmp/estate-123.json",
             r"\temp\estate-123.json",

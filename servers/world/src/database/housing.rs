@@ -2094,7 +2094,7 @@ mod tests {
     }
 
     #[test]
-    fn ensure_test_apartment_rejects_room_numbers_above_packed_limit_without_aliasing_room_one() {
+    fn ensure_test_apartment_rejects_room_number_overflow() {
         let mut db = test_db();
 
         let room_1 = db
@@ -2248,7 +2248,7 @@ mod tests {
     }
 
     #[test]
-    fn housing_apartment_queries_and_house_ids_distinguish_main_and_subdivision_room_one() {
+    fn apartment_queries_distinguish_main_and_subdivision_room_one() {
         let mut db = test_db();
 
         let main = db
@@ -2801,7 +2801,7 @@ mod tests {
     }
 
     #[test]
-    fn housing_estate_detail_ipc_json_for_admin_uses_bounded_fallback_with_counts_and_guidance() {
+    fn admin_detail_ipc_json_uses_bounded_fallback() {
         let mut db = test_db();
         let estate = db.ensure_test_estate(100, "Tester", 67);
 

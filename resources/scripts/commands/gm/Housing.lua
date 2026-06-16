@@ -35,7 +35,7 @@ local INTERIOR_FIELDS = {
 }
 
 local INTERIOR_PRESETS = {
-    capture_shirogane_medium_mist_style = {
+    reference_medium_interior = {
         { "window_style", 2601 },
         { "door_style", 553 },
         { "door_stain", 365 },
@@ -51,9 +51,9 @@ local INTERIOR_PRESETS = {
     },
 }
 
-INTERIOR_PRESETS.capture_shirogane_medium = INTERIOR_PRESETS.capture_shirogane_medium_mist_style
-INTERIOR_PRESETS.retail_shirogane_medium = INTERIOR_PRESETS.capture_shirogane_medium_mist_style
-INTERIOR_PRESETS.capture = INTERIOR_PRESETS.capture_shirogane_medium_mist_style
+INTERIOR_PRESETS.reference_medium = INTERIOR_PRESETS.reference_medium_interior
+INTERIOR_PRESETS.retail_shirogane_medium = INTERIOR_PRESETS.reference_medium_interior
+INTERIOR_PRESETS.capture = INTERIOR_PRESETS.reference_medium_interior
 
 local function lower(value)
     if value == nil then
@@ -74,7 +74,7 @@ local function usage(player)
     printf(player, "       !housing exterior <field> <value>")
     printf(player, "       !housing exterior color <field> <stain>")
     printf(player, "       !housing interior <field> <value>")
-    printf(player, "       !housing interior preset capture_shirogane_medium_mist_style")
+    printf(player, "       !housing interior preset reference_medium_interior")
     printf(player, "       !housing preset [all|interior|exterior] <ReMakePlace json path or preset name> [--reload]")
     printf(player, "       !housing preset latest [all|interior|exterior] [--reload]")
     printf(player, "       !housing preset repeat [--reload]")

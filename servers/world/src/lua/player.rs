@@ -2059,7 +2059,7 @@ mod tests {
     }
 
     #[test]
-    fn housing_lua_interior_preset_queues_capture_shirogane_medium_mist_style_fixture_tasks() {
+    fn housing_lua_interior_preset_queues_fixture_tasks() {
         let lua = mlua::Lua::new();
         lua.globals().set("GM_RANK_DEBUG", 1).unwrap();
         lua.globals()
@@ -2081,7 +2081,7 @@ mod tests {
         let args = lua.create_table().unwrap();
         args.set(1, "interior").unwrap();
         args.set(2, "preset").unwrap();
-        args.set(3, "capture_shirogane_medium_mist_style").unwrap();
+        args.set(3, "reference_medium_interior").unwrap();
         on_command
             .call::<()>((player.clone(), args, "housing"))
             .unwrap();

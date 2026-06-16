@@ -176,7 +176,7 @@ mod tests {
     }
 
     #[test]
-    fn housing_renovation_contexts_cover_retail_7_51_rows() {
+    fn housing_renovation_contexts_cover_known_rows() {
         assert_eq!(HOUSING_RENOVATION_CONTEXTS.len(), 21);
 
         let context = |row_id| {

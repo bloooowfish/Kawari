@@ -1058,7 +1058,7 @@ async fn process_packet(
                             } else {
                                 complete_client_finish_loading(connection).await;
                                 connection
-                                    .sync_pending_housing_indoor_furniture_object_overlays_after_loading_gate(
+                                    .sync_deferred_indoor_overlays_after_load(
                                         intended_use,
                                         "finish_loading",
                                     )
@@ -1902,8 +1902,7 @@ async fn process_packet(
 
                                     let tail_sent = if !apply {
                                         connection
-                                            .send_pending_housing_indoor_furniture_list_tail_after_remodel_gate(
-                                            )
+                                            .send_deferred_indoor_furniture_after_remodel()
                                             .await
                                     } else {
                                         false
@@ -1932,7 +1931,7 @@ async fn process_packet(
                                         complete_client_finish_loading(connection).await;
                                     }
                                     connection
-                                        .sync_pending_housing_indoor_furniture_object_overlays_after_remodel_gate(
+                                        .sync_deferred_indoor_overlays_after_remodel(
                                             intended_use,
                                             tail_sent,
                                         )

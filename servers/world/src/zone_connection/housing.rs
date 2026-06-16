@@ -621,9 +621,7 @@ impl ZoneConnection {
         }
     }
 
-    pub async fn send_pending_housing_indoor_furniture_list_tail_after_remodel_gate(
-        &mut self,
-    ) -> bool {
+    pub async fn send_deferred_indoor_furniture_after_remodel(&mut self) -> bool {
         if !self.pending_housing_indoor_furniture_list_tail {
             return false;
         }
@@ -717,12 +715,12 @@ impl ZoneConnection {
         .await;
     }
 
-    pub async fn sync_pending_housing_indoor_furniture_object_overlays_after_loading_gate(
+    pub async fn sync_deferred_indoor_overlays_after_load(
         &mut self,
         intended_use: TerritoryIntendedUse,
         reason: &'static str,
     ) {
-        if !should_sync_housing_indoor_furniture_object_overlays_after_loading_gate(
+        if !should_sync_indoor_overlays_after_loading(
             intended_use,
             self.pending_housing_indoor_furniture_list_tail,
             self.pending_housing_indoor_furniture_object_overlay_sync,
@@ -733,12 +731,12 @@ impl ZoneConnection {
             .await;
     }
 
-    pub async fn sync_pending_housing_indoor_furniture_object_overlays_after_remodel_gate(
+    pub async fn sync_deferred_indoor_overlays_after_remodel(
         &mut self,
         intended_use: TerritoryIntendedUse,
         tail_sent: bool,
     ) {
-        if !should_sync_housing_indoor_furniture_object_overlays_after_remodel_gate(
+        if !should_sync_indoor_overlays_after_remodel(
             intended_use,
             tail_sent,
             self.pending_housing_indoor_furniture_object_overlay_sync,
@@ -753,7 +751,7 @@ impl ZoneConnection {
         &mut self,
         intended_use: TerritoryIntendedUse,
     ) {
-        if !should_sync_housing_indoor_furniture_object_overlays_on_finish_zoning(
+        if !should_sync_indoor_overlays_on_finish_zoning(
             intended_use,
             self.pending_housing_indoor_furniture_object_overlay_sync,
         ) {
@@ -2816,14 +2814,14 @@ fn simple_housing_indoor_territory_type_id(plot_size: PlotSize) -> u16 {
 
 fn housing_default_indoor_entry_territory_type_id_for_estate(estate: &HousingEstate) -> u16 {
     let outdoor_territory_type_id = estate.territory_type_id.clamp(0, u16::MAX as i32) as u16;
-    original_housing_indoor_territory_type_id(
+    district_default_indoor_territory_type_id(
         outdoor_territory_type_id,
         housing_estate_plot_size(estate),
     )
     .unwrap_or_else(|| simple_housing_indoor_territory_type_id(housing_estate_plot_size(estate)))
 }
 
-fn original_housing_indoor_territory_type_id(
+fn district_default_indoor_territory_type_id(
     outdoor_territory_type_id: u16,
     plot_size: PlotSize,
 ) -> Option<u16> {
@@ -3528,15 +3526,15 @@ fn housing_interior_ready_primary_id(house_id: HouseId) -> u64 {
 }
 
 fn housing_interior_ready_secondary_id(active_estate: Option<&ActiveHousingEstate>) -> u64 {
-    const DEFAULT_READY_COOKIE: u32 = 0x0185_813a;
-    const READY_MODE: u32 = 12;
+    const DEFAULT_HOUSING_READY_COOKIE: u32 = 0x0185_813a;
+    const HOUSING_READY_MODE: u32 = 12;
 
     let cookie = active_estate
         .map(|estate| {
             stable_housing_ready_cookie(estate.land_ident as u64, estate.house_id.to_u64())
         })
-        .unwrap_or(DEFAULT_READY_COOKIE);
-    ((cookie as u64) << 32) | READY_MODE as u64
+        .unwrap_or(DEFAULT_HOUSING_READY_COOKIE);
+    ((cookie as u64) << 32) | HOUSING_READY_MODE as u64
 }
 
 fn stable_housing_ready_cookie(land_ident: u64, house_id: u64) -> u32 {
@@ -3572,7 +3570,7 @@ fn housing_object_data_value_set_from_row(
     })
 }
 
-fn should_sync_housing_indoor_furniture_object_overlays_after_remodel_gate(
+fn should_sync_indoor_overlays_after_remodel(
     intended_use: TerritoryIntendedUse,
     tail_sent: bool,
     pending_overlay_sync: bool,
@@ -3580,7 +3578,7 @@ fn should_sync_housing_indoor_furniture_object_overlays_after_remodel_gate(
     intended_use == TerritoryIntendedUse::HousingIndoor && tail_sent && pending_overlay_sync
 }
 
-fn should_sync_housing_indoor_furniture_object_overlays_after_loading_gate(
+fn should_sync_indoor_overlays_after_loading(
     intended_use: TerritoryIntendedUse,
     pending_tail: bool,
     pending_overlay_sync: bool,
@@ -3588,7 +3586,7 @@ fn should_sync_housing_indoor_furniture_object_overlays_after_loading_gate(
     intended_use == TerritoryIntendedUse::HousingIndoor && !pending_tail && pending_overlay_sync
 }
 
-fn should_sync_housing_indoor_furniture_object_overlays_on_finish_zoning(
+fn should_sync_indoor_overlays_on_finish_zoning(
     _intended_use: TerritoryIntendedUse,
     _pending_overlay_sync: bool,
 ) -> bool {
@@ -4850,83 +4848,61 @@ mod tests {
 
     #[test]
     fn indoor_furniture_object_overlays_sync_before_finish_zoning() {
-        assert!(
-            should_sync_housing_indoor_furniture_object_overlays_after_remodel_gate(
-                TerritoryIntendedUse::HousingIndoor,
-                true,
-                true
-            )
-        );
-        assert!(
-            !should_sync_housing_indoor_furniture_object_overlays_after_remodel_gate(
-                TerritoryIntendedUse::HousingIndoor,
-                false,
-                true
-            )
-        );
-        assert!(
-            !should_sync_housing_indoor_furniture_object_overlays_after_remodel_gate(
-                TerritoryIntendedUse::HousingIndoor,
-                true,
-                false
-            )
-        );
-        assert!(
-            should_sync_housing_indoor_furniture_object_overlays_after_loading_gate(
-                TerritoryIntendedUse::HousingIndoor,
-                false,
-                true
-            )
-        );
-        assert!(
-            !should_sync_housing_indoor_furniture_object_overlays_after_loading_gate(
-                TerritoryIntendedUse::HousingIndoor,
-                true,
-                true
-            )
-        );
-        assert!(
-            !should_sync_housing_indoor_furniture_object_overlays_after_remodel_gate(
-                TerritoryIntendedUse::HousingOutdoor,
-                true,
-                true
-            )
-        );
-        assert!(
-            !should_sync_housing_indoor_furniture_object_overlays_on_finish_zoning(
-                TerritoryIntendedUse::HousingIndoor,
-                false
-            )
-        );
-        assert!(
-            !should_sync_housing_indoor_furniture_object_overlays_on_finish_zoning(
-                TerritoryIntendedUse::HousingIndoor,
-                true
-            )
-        );
-        assert!(
-            !should_sync_housing_indoor_furniture_object_overlays_on_finish_zoning(
-                TerritoryIntendedUse::HousingOutdoor,
-                true
-            )
-        );
+        assert!(should_sync_indoor_overlays_after_remodel(
+            TerritoryIntendedUse::HousingIndoor,
+            true,
+            true
+        ));
+        assert!(!should_sync_indoor_overlays_after_remodel(
+            TerritoryIntendedUse::HousingIndoor,
+            false,
+            true
+        ));
+        assert!(!should_sync_indoor_overlays_after_remodel(
+            TerritoryIntendedUse::HousingIndoor,
+            true,
+            false
+        ));
+        assert!(should_sync_indoor_overlays_after_loading(
+            TerritoryIntendedUse::HousingIndoor,
+            false,
+            true
+        ));
+        assert!(!should_sync_indoor_overlays_after_loading(
+            TerritoryIntendedUse::HousingIndoor,
+            true,
+            true
+        ));
+        assert!(!should_sync_indoor_overlays_after_remodel(
+            TerritoryIntendedUse::HousingOutdoor,
+            true,
+            true
+        ));
+        assert!(!should_sync_indoor_overlays_on_finish_zoning(
+            TerritoryIntendedUse::HousingIndoor,
+            false
+        ));
+        assert!(!should_sync_indoor_overlays_on_finish_zoning(
+            TerritoryIntendedUse::HousingIndoor,
+            true
+        ));
+        assert!(!should_sync_indoor_overlays_on_finish_zoning(
+            TerritoryIntendedUse::HousingOutdoor,
+            true
+        ));
     }
 
     #[test]
     fn outdoor_furniture_object_overlays_do_not_use_indoor_loading_gate() {
-        assert!(
-            !should_sync_housing_indoor_furniture_object_overlays_after_loading_gate(
-                TerritoryIntendedUse::HousingOutdoor,
-                false,
-                true
-            )
-        );
-        assert!(
-            !should_sync_housing_indoor_furniture_object_overlays_on_finish_zoning(
-                TerritoryIntendedUse::HousingIndoor,
-                false
-            )
-        );
+        assert!(!should_sync_indoor_overlays_after_loading(
+            TerritoryIntendedUse::HousingOutdoor,
+            false,
+            true
+        ));
+        assert!(!should_sync_indoor_overlays_on_finish_zoning(
+            TerritoryIntendedUse::HousingIndoor,
+            false
+        ));
     }
 
     #[test]
@@ -6349,7 +6325,7 @@ mod tests {
     }
 
     #[test]
-    fn outdoor_edit_resolution_rejects_stale_context_instead_of_falling_back_to_default_ward() {
+    fn outdoor_edit_rejects_stale_context() {
         let mut estate = ward_estate(5, 1, TEST_HOUSING_LAND_FLAGS);
         estate.ward_index = TEST_HOUSING_WARD_INDEX as i32;
         estate.owner_content_id = Some(100);
@@ -6458,7 +6434,7 @@ mod tests {
     }
 
     #[test]
-    fn build_outdoor_estate_furniture_lists_normalizes_subdivision_house_id_to_raw_landset_entry() {
+    fn outdoor_furniture_lists_normalize_subdivision_house_id() {
         let mut estate = ward_estate(5, 1, 0x0B);
         estate.house_id = house_id(5, 0, false).to_u64() as i64;
         let rows = vec![HousingFurniture {
@@ -6576,8 +6552,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_active_indoor_housing_estate_prefers_context_matching_subdivision_apartment_when_active_estate_is_missing()
-     {
+    fn resolve_indoor_estate_prefers_matching_subdivision_apartment() {
         let mut database = WorldDatabase::new_at(":memory:");
         let main_division_apartment = database.insert_housing_estate_for_test(HousingEstate {
             land_ident: house_id(0, 1, true).to_u64() as i64,
@@ -7163,15 +7138,15 @@ mod tests {
     #[test]
     fn original_house_interior_territory_matches_retail_district_and_plot_size() {
         assert_eq!(
-            original_housing_indoor_territory_type_id(340, PlotSize::Large),
+            district_default_indoor_territory_type_id(340, PlotSize::Large),
             Some(344)
         );
         assert_eq!(
-            original_housing_indoor_territory_type_id(340, PlotSize::Medium),
+            district_default_indoor_territory_type_id(340, PlotSize::Medium),
             Some(343)
         );
         assert_eq!(
-            original_housing_indoor_territory_type_id(340, PlotSize::Small),
+            district_default_indoor_territory_type_id(340, PlotSize::Small),
             Some(342)
         );
     }
