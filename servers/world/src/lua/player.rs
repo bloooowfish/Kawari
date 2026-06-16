@@ -309,9 +309,37 @@ impl LuaPlayer {
             .push(LuaTask::UpdateHousingInterior { field, value });
     }
 
-    fn apply_housing_preset(&mut self, path: String, scope: HousingPresetScope) {
+    fn apply_housing_preset(&mut self, path: String, scope: HousingPresetScope, reload: bool) {
+        self.queued_tasks.push(LuaTask::ApplyHousingPreset {
+            path,
+            scope,
+            reload,
+        });
+    }
+
+    fn apply_latest_housing_preset(&mut self, scope: HousingPresetScope, reload: bool) {
         self.queued_tasks
-            .push(LuaTask::ApplyHousingPreset { path, scope });
+            .push(LuaTask::ApplyLatestHousingPreset { scope, reload });
+    }
+
+    fn repeat_housing_preset(&mut self, reload: bool) {
+        self.queued_tasks
+            .push(LuaTask::RepeatHousingPreset { reload });
+    }
+
+    fn check_housing_preset(&mut self, path: String, scope: HousingPresetScope) {
+        self.queued_tasks
+            .push(LuaTask::CheckHousingPreset { path, scope });
+    }
+
+    fn check_latest_housing_preset(&mut self, scope: HousingPresetScope) {
+        self.queued_tasks
+            .push(LuaTask::CheckLatestHousingPreset { scope });
+    }
+
+    fn check_repeated_housing_preset(&mut self) {
+        self.queued_tasks
+            .push(LuaTask::CheckRepeatedHousingPreset {});
     }
 
     fn give_housing_kit(&mut self, kit: HousingKit) {
@@ -333,6 +361,10 @@ impl LuaPlayer {
 
     fn exit_test_house(&mut self) {
         self.queued_tasks.push(LuaTask::ExitTestHouse {});
+    }
+
+    fn reload_housing(&mut self) {
+        self.queued_tasks.push(LuaTask::ReloadHousing {});
     }
 
     fn unlock_content(&mut self, id: u16) {
@@ -954,11 +986,37 @@ impl UserData for LuaPlayer {
         );
         methods.add_method_mut(
             "apply_housing_preset",
-            |_, this, (path, scope): (String, String)| {
-                this.apply_housing_preset(path, parse_housing_preset_scope(&scope)?);
+            |_, this, (path, scope, reload): (String, String, bool)| {
+                this.apply_housing_preset(path, parse_housing_preset_scope(&scope)?, reload);
                 Ok(())
             },
         );
+        methods.add_method_mut(
+            "apply_latest_housing_preset",
+            |_, this, (scope, reload): (String, bool)| {
+                this.apply_latest_housing_preset(parse_housing_preset_scope(&scope)?, reload);
+                Ok(())
+            },
+        );
+        methods.add_method_mut("repeat_housing_preset", |_, this, reload: bool| {
+            this.repeat_housing_preset(reload);
+            Ok(())
+        });
+        methods.add_method_mut(
+            "check_housing_preset",
+            |_, this, (path, scope): (String, String)| {
+                this.check_housing_preset(path, parse_housing_preset_scope(&scope)?);
+                Ok(())
+            },
+        );
+        methods.add_method_mut("check_latest_housing_preset", |_, this, scope: String| {
+            this.check_latest_housing_preset(parse_housing_preset_scope(&scope)?);
+            Ok(())
+        });
+        methods.add_method_mut("check_repeated_housing_preset", |_, this, _: ()| {
+            this.check_repeated_housing_preset();
+            Ok(())
+        });
         methods.add_method_mut("give_housing_kit", |_, this, kit: String| {
             this.give_housing_kit(parse_housing_kit(&kit)?);
             Ok(())
@@ -973,6 +1031,10 @@ impl UserData for LuaPlayer {
         });
         methods.add_method_mut("exit_test_house", |_, this, _: ()| {
             this.exit_test_house();
+            Ok(())
+        });
+        methods.add_method_mut("reload_housing", |_, this, _: ()| {
+            this.reload_housing();
             Ok(())
         });
         methods.add_method_mut("unlock_content", |_, this, id: u16| {
@@ -1547,10 +1609,274 @@ mod tests {
 
         let player = player.borrow::<LuaPlayer>().unwrap();
         match player.queued_tasks.as_slice() {
-            [LuaTask::ApplyHousingPreset { path, scope }] => {
+            [
+                LuaTask::ApplyHousingPreset {
+                    path,
+                    scope,
+                    reload,
+                },
+            ] => {
                 assert_eq!(path, "CAFE CAT WALK");
                 assert_eq!(*scope, HousingPresetScope::Interior);
+                assert!(!reload);
             }
+            other => panic!("unexpected tasks: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn housing_lua_preset_latest_queues_scope_and_reload() {
+        let lua = mlua::Lua::new();
+        lua.globals().set("GM_RANK_DEBUG", 1).unwrap();
+        lua.globals()
+            .set(
+                "printf",
+                lua.create_function(|_, _: mlua::MultiValue| Ok(()))
+                    .unwrap(),
+            )
+            .unwrap();
+        lua.load(include_str!(
+            "../../../../resources/scripts/commands/gm/Housing.lua"
+        ))
+        .exec()
+        .unwrap();
+
+        let player = lua.create_userdata(LuaPlayer::default()).unwrap();
+        let args = lua.create_table().unwrap();
+        args.set(1, "preset").unwrap();
+        args.set(2, "latest").unwrap();
+        args.set(3, "interior").unwrap();
+        args.set(4, "--reload").unwrap();
+
+        let on_command: Function = lua.globals().get("onCommand").unwrap();
+        on_command
+            .call::<()>((player.clone(), args, "housing"))
+            .unwrap();
+
+        let player = player.borrow::<LuaPlayer>().unwrap();
+        match player.queued_tasks.as_slice() {
+            [LuaTask::ApplyLatestHousingPreset { scope, reload }] => {
+                assert_eq!(*scope, HousingPresetScope::Interior);
+                assert!(*reload);
+            }
+            other => panic!("unexpected tasks: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn housing_lua_preset_repeat_queues_reload() {
+        let lua = mlua::Lua::new();
+        lua.globals().set("GM_RANK_DEBUG", 1).unwrap();
+        lua.globals()
+            .set(
+                "printf",
+                lua.create_function(|_, _: mlua::MultiValue| Ok(()))
+                    .unwrap(),
+            )
+            .unwrap();
+        lua.load(include_str!(
+            "../../../../resources/scripts/commands/gm/Housing.lua"
+        ))
+        .exec()
+        .unwrap();
+
+        let player = lua.create_userdata(LuaPlayer::default()).unwrap();
+        let args = lua.create_table().unwrap();
+        args.set(1, "preset").unwrap();
+        args.set(2, "repeat").unwrap();
+        args.set(3, "--reload").unwrap();
+
+        let on_command: Function = lua.globals().get("onCommand").unwrap();
+        on_command
+            .call::<()>((player.clone(), args, "housing"))
+            .unwrap();
+
+        let player = player.borrow::<LuaPlayer>().unwrap();
+        match player.queued_tasks.as_slice() {
+            [LuaTask::RepeatHousingPreset { reload }] => assert!(*reload),
+            other => panic!("unexpected tasks: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn housing_lua_preset_path_can_contain_reload_token() {
+        let lua = mlua::Lua::new();
+        lua.globals().set("GM_RANK_DEBUG", 1).unwrap();
+        lua.globals()
+            .set(
+                "printf",
+                lua.create_function(|_, _: mlua::MultiValue| Ok(()))
+                    .unwrap(),
+            )
+            .unwrap();
+        lua.load(include_str!(
+            "../../../../resources/scripts/commands/gm/Housing.lua"
+        ))
+        .exec()
+        .unwrap();
+
+        let player = lua.create_userdata(LuaPlayer::default()).unwrap();
+        let args = lua.create_table().unwrap();
+        args.set(1, "preset").unwrap();
+        args.set(2, "interior").unwrap();
+        args.set(3, "reload").unwrap();
+        args.set(4, "room").unwrap();
+
+        let on_command: Function = lua.globals().get("onCommand").unwrap();
+        on_command
+            .call::<()>((player.clone(), args, "housing"))
+            .unwrap();
+
+        let player = player.borrow::<LuaPlayer>().unwrap();
+        match player.queued_tasks.as_slice() {
+            [
+                LuaTask::ApplyHousingPreset {
+                    path,
+                    scope,
+                    reload,
+                },
+            ] => {
+                assert_eq!(path, "reload room");
+                assert_eq!(*scope, HousingPresetScope::Interior);
+                assert!(!reload);
+            }
+            other => panic!("unexpected tasks: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn housing_lua_preset_check_rejects_reload_flag() {
+        let lua = mlua::Lua::new();
+        lua.globals().set("GM_RANK_DEBUG", 1).unwrap();
+        lua.globals()
+            .set(
+                "printf",
+                lua.create_function(|_, _: mlua::MultiValue| Ok(()))
+                    .unwrap(),
+            )
+            .unwrap();
+        lua.load(include_str!(
+            "../../../../resources/scripts/commands/gm/Housing.lua"
+        ))
+        .exec()
+        .unwrap();
+
+        let player = lua.create_userdata(LuaPlayer::default()).unwrap();
+        let args = lua.create_table().unwrap();
+        args.set(1, "preset").unwrap();
+        args.set(2, "check").unwrap();
+        args.set(3, "latest").unwrap();
+        args.set(4, "--reload").unwrap();
+
+        let on_command: Function = lua.globals().get("onCommand").unwrap();
+        on_command
+            .call::<()>((player.clone(), args, "housing"))
+            .unwrap();
+
+        let player = player.borrow::<LuaPlayer>().unwrap();
+        assert!(player.queued_tasks.is_empty());
+    }
+
+    #[test]
+    fn housing_lua_preset_repeat_rejects_explicit_scope() {
+        let lua = mlua::Lua::new();
+        lua.globals().set("GM_RANK_DEBUG", 1).unwrap();
+        lua.globals()
+            .set(
+                "printf",
+                lua.create_function(|_, _: mlua::MultiValue| Ok(()))
+                    .unwrap(),
+            )
+            .unwrap();
+        lua.load(include_str!(
+            "../../../../resources/scripts/commands/gm/Housing.lua"
+        ))
+        .exec()
+        .unwrap();
+
+        let player = lua.create_userdata(LuaPlayer::default()).unwrap();
+        let args = lua.create_table().unwrap();
+        args.set(1, "preset").unwrap();
+        args.set(2, "check").unwrap();
+        args.set(3, "exterior").unwrap();
+        args.set(4, "repeat").unwrap();
+
+        let on_command: Function = lua.globals().get("onCommand").unwrap();
+        on_command
+            .call::<()>((player.clone(), args, "housing"))
+            .unwrap();
+
+        let player = player.borrow::<LuaPlayer>().unwrap();
+        assert!(player.queued_tasks.is_empty());
+    }
+
+    #[test]
+    fn housing_lua_preset_check_latest_queues_check() {
+        let lua = mlua::Lua::new();
+        lua.globals().set("GM_RANK_DEBUG", 1).unwrap();
+        lua.globals()
+            .set(
+                "printf",
+                lua.create_function(|_, _: mlua::MultiValue| Ok(()))
+                    .unwrap(),
+            )
+            .unwrap();
+        lua.load(include_str!(
+            "../../../../resources/scripts/commands/gm/Housing.lua"
+        ))
+        .exec()
+        .unwrap();
+
+        let player = lua.create_userdata(LuaPlayer::default()).unwrap();
+        let args = lua.create_table().unwrap();
+        args.set(1, "preset").unwrap();
+        args.set(2, "check").unwrap();
+        args.set(3, "exterior").unwrap();
+        args.set(4, "latest").unwrap();
+
+        let on_command: Function = lua.globals().get("onCommand").unwrap();
+        on_command
+            .call::<()>((player.clone(), args, "housing"))
+            .unwrap();
+
+        let player = player.borrow::<LuaPlayer>().unwrap();
+        match player.queued_tasks.as_slice() {
+            [LuaTask::CheckLatestHousingPreset { scope }] => {
+                assert_eq!(*scope, HousingPresetScope::Exterior);
+            }
+            other => panic!("unexpected tasks: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn housing_lua_reload_queues_housing_reload() {
+        let lua = mlua::Lua::new();
+        lua.globals().set("GM_RANK_DEBUG", 1).unwrap();
+        lua.globals()
+            .set(
+                "printf",
+                lua.create_function(|_, _: mlua::MultiValue| Ok(()))
+                    .unwrap(),
+            )
+            .unwrap();
+        lua.load(include_str!(
+            "../../../../resources/scripts/commands/gm/Housing.lua"
+        ))
+        .exec()
+        .unwrap();
+
+        let player = lua.create_userdata(LuaPlayer::default()).unwrap();
+        let args = lua.create_table().unwrap();
+        args.set(1, "reload").unwrap();
+
+        let on_command: Function = lua.globals().get("onCommand").unwrap();
+        on_command
+            .call::<()>((player.clone(), args, "housing"))
+            .unwrap();
+
+        let player = player.borrow::<LuaPlayer>().unwrap();
+        match player.queued_tasks.as_slice() {
+            [LuaTask::ReloadHousing {}] => {}
             other => panic!("unexpected tasks: {other:?}"),
         }
     }

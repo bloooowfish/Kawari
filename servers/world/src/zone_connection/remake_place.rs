@@ -2,6 +2,7 @@ use std::{
     ffi::OsStr,
     fs,
     path::{Path, PathBuf},
+    time::SystemTime,
 };
 
 use serde::Deserialize;
@@ -120,6 +121,10 @@ pub(super) fn resolve_remake_place_preset_path(
     resolve_remake_place_preset_path_under_root(input, &remake_place_layout_root())
 }
 
+pub(super) fn resolve_latest_remake_place_preset_path() -> Result<RemakePlacePresetPath, String> {
+    resolve_latest_remake_place_preset_path_under_root(&remake_place_layout_root())
+}
+
 fn resolve_remake_place_preset_path_under_root(
     input: &str,
     root: &Path,
@@ -153,6 +158,17 @@ fn resolve_remake_place_preset_path_under_root(
     let found = find_remake_place_preset_by_name(&root, input)?
         .ok_or_else(|| format!("ReMakePlace preset not found under {root:?}: {input}"))?;
     Ok(RemakePlacePresetPath { root, path: found })
+}
+
+fn resolve_latest_remake_place_preset_path_under_root(
+    root: &Path,
+) -> Result<RemakePlacePresetPath, String> {
+    let root = root
+        .canonicalize()
+        .map_err(|error| format!("Unable to open ReMakePlace layout root {root:?}: {error}"))?;
+    let path = find_latest_remake_place_preset(&root)?
+        .ok_or_else(|| format!("No ReMakePlace .json presets found under {root:?}"))?;
+    Ok(RemakePlacePresetPath { root, path })
 }
 
 pub(super) fn parse_remake_place_layout_file(path: &Path) -> Result<RemakePlaceLayout, String> {
@@ -616,6 +632,58 @@ fn find_remake_place_preset_by_name(root: &Path, query: &str) -> Result<Option<P
     }
 }
 
+fn find_latest_remake_place_preset(root: &Path) -> Result<Option<PathBuf>, String> {
+    let mut stack = vec![root.to_path_buf()];
+    let mut latest: Option<(SystemTime, PathBuf)> = None;
+
+    while let Some(dir) = stack.pop() {
+        let mut entries = fs::read_dir(&dir)
+            .map_err(|error| {
+                format!("Unable to scan ReMakePlace layout directory {dir:?}: {error}")
+            })?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| {
+                format!("Unable to scan ReMakePlace layout directory {dir:?}: {error}")
+            })?;
+        entries.sort_by_key(|entry| entry.path());
+
+        for entry in entries {
+            let path = entry.path();
+            let file_type = entry.file_type().map_err(|error| {
+                format!("Unable to inspect ReMakePlace layout path {path:?}: {error}")
+            })?;
+
+            if file_type.is_dir() {
+                stack.push(path);
+                continue;
+            }
+
+            if path.extension().and_then(OsStr::to_str) != Some("json") {
+                continue;
+            }
+
+            let path = canonical_json_file_under_root(root, &path)?;
+            let modified = fs::metadata(&path)
+                .and_then(|metadata| metadata.modified())
+                .unwrap_or(SystemTime::UNIX_EPOCH);
+
+            let replace = latest
+                .as_ref()
+                .map(|(latest_modified, latest_path)| {
+                    modified > *latest_modified
+                        || (modified == *latest_modified && path > *latest_path)
+                })
+                .unwrap_or(true);
+
+            if replace {
+                latest = Some((modified, path));
+            }
+        }
+    }
+
+    Ok(latest.map(|(_, path)| path))
+}
+
 fn normalize_layout_name(value: &str) -> String {
     let value = value.trim().trim_matches('"').to_lowercase();
     value
@@ -958,6 +1026,31 @@ mod tests {
         assert_eq!(resolved.root, external_root.canonicalize().unwrap());
 
         fs::remove_dir_all(&external_root).unwrap();
+    }
+
+    #[test]
+    fn resolves_latest_json_under_layout_root() {
+        let unique = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "kawari-remake-place-latest-test-{}-{unique}",
+            std::process::id()
+        ));
+        let nested = root.join("nested");
+        fs::create_dir_all(&nested).unwrap();
+        let older_path = root.join("older.json");
+        let latest_path = nested.join("latest.json");
+
+        fs::write(&older_path, "{}").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        fs::write(&latest_path, "{}").unwrap();
+
+        let resolved = resolve_latest_remake_place_preset_path_under_root(&root).unwrap();
+        assert_eq!(resolved.path, latest_path.canonicalize().unwrap());
+
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

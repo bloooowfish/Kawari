@@ -2505,6 +2505,46 @@ impl ZoneConnection {
         .await;
     }
 
+    pub async fn reload_current_housing_interior(&mut self) {
+        let active_estate = self.active_housing_estate.clone();
+        let estate = {
+            let mut database = self.database.lock();
+            selected_or_default_test_estate(
+                &mut database,
+                active_estate.as_ref(),
+                self.player_data.character.content_id as u64,
+                &self.player_data.character.name,
+                self.config.world_id,
+            )
+        };
+
+        self.set_active_housing_estate_from_row(&estate, true);
+
+        let is_apartment = estate.is_apartment && estate.room_number > 0;
+        let entry = housing_indoor_entry_transform(is_apartment);
+        let indoor_territory_type_id = if is_apartment {
+            TEST_APARTMENT_INDOOR_TERRITORY_TYPE_ID
+        } else {
+            self.housing_indoor_territory_type_id_for_estate(&estate)
+        };
+        tracing::debug!(
+            content_id = self.player_data.character.content_id,
+            land_ident = estate.land_ident,
+            house_id = estate.house_id,
+            territory_type_id = indoor_territory_type_id,
+            is_apartment,
+            "Reloading current housing interior"
+        );
+
+        self.change_zone(
+            indoor_territory_type_id,
+            Some(entry.position),
+            Some(entry.rotation),
+            None,
+        )
+        .await;
+    }
+
     pub async fn enter_test_apartment(&mut self, room_number: u16) {
         if !valid_apartment_room_number(room_number) {
             self.send_notice(&format!(

@@ -188,7 +188,23 @@ pub enum LuaTask {
     ApplyHousingPreset {
         path: String,
         scope: HousingPresetScope,
+        reload: bool,
     },
+    ApplyLatestHousingPreset {
+        scope: HousingPresetScope,
+        reload: bool,
+    },
+    RepeatHousingPreset {
+        reload: bool,
+    },
+    CheckHousingPreset {
+        path: String,
+        scope: HousingPresetScope,
+    },
+    CheckLatestHousingPreset {
+        scope: HousingPresetScope,
+    },
+    CheckRepeatedHousingPreset {},
     GiveHousingKit {
         kit: HousingKit,
     },
@@ -197,6 +213,7 @@ pub enum LuaTask {
     },
     EnterTestHouse {},
     ExitTestHouse {},
+    ReloadHousing {},
     UnlockContent {
         id: u16,
     },

@@ -237,6 +237,7 @@ async fn initial_setup(
                     pending_housing_indoor_finish_loading: false,
                     pending_housing_indoor_furniture_object_overlay_sync: false,
                     pending_housing_login_exit_plot_location: None,
+                    last_housing_preset: None,
                     obsfucation_data: ObsfucationData::default(),
                     queued_content: None,
                     conditions: Conditions::default(),

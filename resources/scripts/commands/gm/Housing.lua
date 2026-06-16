@@ -66,7 +66,7 @@ end
 local function usage(player)
     printf(player, "Usage: !housing testhouse [personal|fc] [small|medium|large] [territory_id] [ward] [plot]")
     printf(player, "       !housing apartment [room]")
-    printf(player, "       !housing enter [apartment [room]]|exit|info")
+    printf(player, "       !housing enter [apartment [room]]|exit|reload|info")
     printf(player, "       !housing reset furniture|estate|all")
     printf(player, "       !housing light <0-5>")
     printf(player, "       !housing greeting <text>")
@@ -75,7 +75,11 @@ local function usage(player)
     printf(player, "       !housing exterior color <field> <stain>")
     printf(player, "       !housing interior <field> <value>")
     printf(player, "       !housing interior preset capture_shirogane_medium_mist_style")
-    printf(player, "       !housing preset [all|interior|exterior] <ReMakePlace json path or preset name>")
+    printf(player, "       !housing preset [all|interior|exterior] <ReMakePlace json path or preset name> [--reload]")
+    printf(player, "       !housing preset latest [all|interior|exterior] [--reload]")
+    printf(player, "       !housing preset repeat [--reload]")
+    printf(player, "       !housing preset check [all|interior|exterior] <path|latest>")
+    printf(player, "       !housing preset check repeat")
     printf(player, "       !housing givekit indoor|outdoor|npc")
 end
 
@@ -151,6 +155,101 @@ local function is_preset_scope(value)
     return value == "all" or value == "interior" or value == "indoor" or value == "exterior" or value == "outdoor"
 end
 
+local function is_reload_flag(value)
+    value = lower(value)
+    return value == "--reload"
+end
+
+local function collect_preset_args(args, start_index)
+    local values = {}
+    local reload = false
+
+    for i = start_index, #args do
+        values[#values + 1] = args[i]
+    end
+
+    if is_reload_flag(values[#values]) then
+        reload = true
+        table.remove(values, #values)
+    end
+
+    return values, reload
+end
+
+local function join_values(values, start_index)
+    local selected = {}
+
+    for i = start_index, #values do
+        selected[#selected + 1] = values[i]
+    end
+
+    return table.concat(selected, " ")
+end
+
+local function parse_preset_args(args)
+    local values, reload = collect_preset_args(args, 2)
+    local check_only = false
+    local scope = "all"
+    local explicit_scope = false
+
+    if lower(values[1]) == "check" then
+        check_only = true
+        table.remove(values, 1)
+    end
+
+    if check_only and reload then
+        return nil
+    end
+
+    if is_preset_scope(values[1]) then
+        scope = values[1]
+        explicit_scope = true
+        table.remove(values, 1)
+    end
+
+    local source = lower(values[1])
+    if source == nil then
+        return nil
+    end
+
+    if source == "latest" then
+        if is_preset_scope(values[2]) then
+            scope = values[2]
+            table.remove(values, 2)
+        end
+
+        if #values ~= 1 then
+            return nil
+        end
+
+        return { kind = "latest", scope = scope, reload = reload, check_only = check_only }
+    end
+
+    if source == "repeat" then
+        if #values ~= 1 or explicit_scope then
+            return nil
+        end
+
+        return { kind = "repeat", scope = scope, reload = reload, check_only = check_only }
+    end
+
+    local preset_path = join_values(values, 1)
+
+    if preset_path == "" then
+        return nil
+    end
+
+    return { kind = "path", path = preset_path, scope = scope, reload = reload, check_only = check_only }
+end
+
+local function reload_suffix(reload)
+    if reload then
+        return " with reload"
+    end
+
+    return ""
+end
+
 function onCommand(player, args, name)
     local subcommand = lower(args[1])
 
@@ -195,6 +294,12 @@ function onCommand(player, args, name)
     if subcommand == "exit" then
         player:exit_test_house()
         printf(player, "Exiting your local test estate.")
+        return
+    end
+
+    if subcommand == "reload" then
+        player:reload_housing()
+        printf(player, "Reloading your local test estate.")
         return
     end
 
@@ -319,23 +424,37 @@ function onCommand(player, args, name)
     end
 
     if subcommand == "preset" then
-        local scope = "all"
-        local path_start_index = 2
+        local preset = parse_preset_args(args)
 
-        if is_preset_scope(args[2]) then
-            scope = args[2]
-            path_start_index = 3
-        end
-
-        local preset_path = join_args(args, path_start_index)
-
-        if preset_path == "" then
+        if preset == nil then
             usage(player)
             return
         end
 
-        player:apply_housing_preset(preset_path, scope)
-        printf(player, "Queued ReMakePlace housing preset: %s (%s).", preset_path, scope)
+        if preset.check_only then
+            if preset.kind == "latest" then
+                player:check_latest_housing_preset(preset.scope)
+                printf(player, "Queued ReMakePlace preset check: latest (%s).", preset.scope)
+            elseif preset.kind == "repeat" then
+                player:check_repeated_housing_preset()
+                printf(player, "Queued ReMakePlace preset check: repeat.")
+            else
+                player:check_housing_preset(preset.path, preset.scope)
+                printf(player, "Queued ReMakePlace preset check: %s (%s).", preset.path, preset.scope)
+            end
+            return
+        end
+
+        if preset.kind == "latest" then
+            player:apply_latest_housing_preset(preset.scope, preset.reload)
+            printf(player, "Queued ReMakePlace housing preset: latest (%s)%s.", preset.scope, reload_suffix(preset.reload))
+        elseif preset.kind == "repeat" then
+            player:repeat_housing_preset(preset.reload)
+            printf(player, "Queued ReMakePlace housing preset: repeat%s.", reload_suffix(preset.reload))
+        else
+            player:apply_housing_preset(preset.path, preset.scope, preset.reload)
+            printf(player, "Queued ReMakePlace housing preset: %s (%s)%s.", preset.path, preset.scope, reload_suffix(preset.reload))
+        end
         return
     end
 

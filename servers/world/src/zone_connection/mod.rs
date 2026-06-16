@@ -1,4 +1,5 @@
 use std::{
+    path::PathBuf,
     sync::Arc,
     time::{Instant, SystemTime},
 };
@@ -13,7 +14,7 @@ use crate::{
         AetherCurrent, Aetheryte, Character, ClassJob, Companion, Friends, GrandCompany, Mentor,
         Quest, SearchInfo, Volatile,
     },
-    lua::{KawariLua, LuaTask},
+    lua::{HousingPresetScope, KawariLua, LuaTask},
 };
 use kawari::{
     common::{ContainerType, HandlerId, HouseId, ObjectId, Position, timestamp_secs},
@@ -152,6 +153,12 @@ pub struct AppliedHousingAppearanceItemOperation {
     pub original_target_item: Item,
 }
 
+#[derive(Clone, Debug)]
+pub struct LastHousingPreset {
+    pub path: PathBuf,
+    pub scope: HousingPresetScope,
+}
+
 /// Represents a single connection between an instance of the client and the zone portion of the world server.
 pub struct ZoneConnection {
     pub config: WorldConfig,
@@ -191,6 +198,7 @@ pub struct ZoneConnection {
     pub pending_housing_indoor_finish_loading: bool,
     pub pending_housing_indoor_furniture_object_overlay_sync: bool,
     pub pending_housing_login_exit_plot_location: Option<HousingPlotLocation>,
+    pub last_housing_preset: Option<LastHousingPreset>,
 
     pub obsfucation_data: ObsfucationData,
 
