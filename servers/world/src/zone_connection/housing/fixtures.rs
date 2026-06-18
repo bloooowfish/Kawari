@@ -1,12 +1,13 @@
 use physis::TerritoryIntendedUse;
 
-use super::serialization::housing_interior_renovation_row_id_from_json;
+use super::serialization::{
+    housing_interior_renovation_row_id_from_json, update_interior_json_renovation_row_id,
+};
 use super::{
     ActiveHousingEstate, DEFAULT_LOCAL_HOUSING_INDOOR_TERRITORY_TYPE_ID_LARGE,
     DEFAULT_LOCAL_HOUSING_INDOOR_TERRITORY_TYPE_ID_MEDIUM,
     DEFAULT_LOCAL_HOUSING_INDOOR_TERRITORY_TYPE_ID_SMALL, active_housing_estate,
     housing_estate_plot_size, housing_indoor_entry_transform, selected_or_owned_housing_estate,
-    update_interior_json_renovation_row_id,
 };
 use crate::{HousingEstate, WorldDatabase, zone_connection::ZoneConnection};
 use kawari::ipc::zone::PlotSize;

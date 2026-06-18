@@ -635,7 +635,7 @@ where
     }
 }
 
-pub(super) fn update_exterior_json_field(
+pub(in crate::zone_connection) fn update_exterior_json_field(
     existing_json: &str,
     field: HousingExteriorField,
     value: u16,
@@ -659,7 +659,7 @@ pub(super) fn update_exterior_json_field(
     serialize_housing_json(&exterior, "housing exterior mutation")
 }
 
-pub(super) fn update_exterior_json_color(
+pub(in crate::zone_connection) fn update_exterior_json_color(
     existing_json: &str,
     field: HousingExteriorColorField,
     value: u8,
@@ -686,7 +686,7 @@ pub(super) fn update_exterior_json_color(
     serialize_housing_json(&exterior, "housing exterior color mutation")
 }
 
-pub(super) fn update_interior_json_field(
+pub(in crate::zone_connection) fn update_interior_json_field(
     existing_json: &str,
     field: HousingInteriorField,
     value: u32,
@@ -718,7 +718,7 @@ pub(super) fn housing_interior_renovation_row_id_from_json(json: &str) -> Option
     parse_housing_json_or_default::<HouseInteriorJson>(json, "housing interior").renovation_row_id
 }
 
-pub(super) fn update_interior_json_renovation_row_id(
+pub(in crate::zone_connection) fn update_interior_json_renovation_row_id(
     existing_json: &str,
     renovation_row_id: u16,
 ) -> Result<String, serde_json::Error> {

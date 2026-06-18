@@ -19,6 +19,10 @@ use self::serialization::{
     MINIMAL_INTERIOR_WALL, estate_land_data, housing_interior_details,
     housing_interior_renovation_row_id_from_json,
 };
+pub(super) use self::serialization::{
+    update_exterior_json_color, update_exterior_json_field, update_interior_json_field,
+    update_interior_json_renovation_row_id,
+};
 use glam::Vec3;
 use physis::TerritoryIntendedUse;
 
@@ -105,37 +109,6 @@ const DEFAULT_LOCAL_APARTMENT_INDOOR_TERRITORY_TYPE_ID: u16 = 609; // Lily Hills
 const INDOOR_FURNITURE_LISTS_BEFORE_FINISH_LOADING: usize = 3;
 const HOUSING_PLOTS_PER_DIVISION: u8 = 30;
 const APARTMENT_INTERIOR_TERRITORY_TYPE_IDS: [u16; 5] = [608, 609, 610, 655, 999];
-
-pub(super) fn update_exterior_json_field(
-    existing_json: &str,
-    field: HousingExteriorField,
-    value: u16,
-) -> Result<String, serde_json::Error> {
-    serialization::update_exterior_json_field(existing_json, field, value)
-}
-
-pub(super) fn update_exterior_json_color(
-    existing_json: &str,
-    field: HousingExteriorColorField,
-    value: u8,
-) -> Result<String, serde_json::Error> {
-    serialization::update_exterior_json_color(existing_json, field, value)
-}
-
-pub(super) fn update_interior_json_field(
-    existing_json: &str,
-    field: HousingInteriorField,
-    value: u32,
-) -> Result<String, serde_json::Error> {
-    serialization::update_interior_json_field(existing_json, field, value)
-}
-
-pub(super) fn update_interior_json_renovation_row_id(
-    existing_json: &str,
-    renovation_row_id: u16,
-) -> Result<String, serde_json::Error> {
-    serialization::update_interior_json_renovation_row_id(existing_json, renovation_row_id)
-}
 
 impl ZoneConnection {
     pub fn resolve_active_housing_estate(
