@@ -6,7 +6,19 @@ use kawari::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::inventory::interior_placed_containers;
+use crate::{
+    housing::{
+        apartment::valid_apartment_room_number,
+        constants::{
+            DEFAULT_LOCAL_HOUSING_DIVISION, DEFAULT_LOCAL_HOUSING_LAND_FLAGS,
+            DEFAULT_LOCAL_HOUSING_PLOT_INDEX, DEFAULT_LOCAL_HOUSING_PLOT_SIZE,
+            DEFAULT_LOCAL_HOUSING_TERRITORY_TYPE_ID, DEFAULT_LOCAL_HOUSING_WARD_INDEX,
+        },
+        container::{container_type_to_i32, housing_container_kind},
+        text::truncate_utf8_to_raw_bytes,
+    },
+    inventory::interior_placed_containers,
+};
 
 use super::{
     WorldDatabase,
@@ -15,13 +27,6 @@ use super::{
     unixepoch,
 };
 
-pub const DEFAULT_LOCAL_HOUSING_TERRITORY_TYPE_ID: u16 = 340;
-pub const DEFAULT_LOCAL_HOUSING_WARD_INDEX: u8 = 0;
-pub const DEFAULT_LOCAL_HOUSING_DIVISION: u8 = 0;
-pub const DEFAULT_LOCAL_HOUSING_PLOT_INDEX: u8 = 5;
-pub const DEFAULT_LOCAL_HOUSING_PLOT_SIZE: PlotSize = PlotSize::Large;
-pub const DEFAULT_LOCAL_HOUSING_LAND_FLAGS: i32 = 0x0B;
-pub const MAX_APARTMENT_ROOM_NUMBER: u16 = 1023;
 const HOUSING_ESTATE_NAME_MAX_PAYLOAD_BYTES: usize = 20;
 const HOUSING_GREETING_MAX_PAYLOAD_BYTES: usize = 192;
 
@@ -154,11 +159,11 @@ impl WorldDatabase {
             owner_name: spec.owner_name.clone(),
             plot_size: spec.plot_size as i32,
             flags,
-            estate_name: truncate_utf8_to_max_bytes(
+            estate_name: truncate_utf8_to_raw_bytes(
                 &format!("{}'s Local Estate", spec.owner_name),
                 HOUSING_ESTATE_NAME_MAX_PAYLOAD_BYTES,
             ),
-            greeting: truncate_utf8_to_max_bytes(
+            greeting: truncate_utf8_to_raw_bytes(
                 "A local Kawari debug estate.",
                 HOUSING_GREETING_MAX_PAYLOAD_BYTES,
             ),
@@ -273,11 +278,11 @@ impl WorldDatabase {
             owner_name: for_owner_name.to_string(),
             plot_size: PlotSize::Small as i32,
             flags: DEFAULT_LOCAL_HOUSING_LAND_FLAGS,
-            estate_name: truncate_utf8_to_max_bytes(
+            estate_name: truncate_utf8_to_raw_bytes(
                 &format!("{for_owner_name}'s Apt. {room_number}"),
                 HOUSING_ESTATE_NAME_MAX_PAYLOAD_BYTES,
             ),
-            greeting: truncate_utf8_to_max_bytes(
+            greeting: truncate_utf8_to_raw_bytes(
                 "A local Kawari debug apartment.",
                 HOUSING_GREETING_MAX_PAYLOAD_BYTES,
             ),
@@ -467,7 +472,7 @@ impl WorldDatabase {
     }
 
     pub fn update_housing_name(&mut self, for_land_ident: i64, name: &str) -> bool {
-        let name = truncate_utf8_to_max_bytes(name, HOUSING_ESTATE_NAME_MAX_PAYLOAD_BYTES);
+        let name = truncate_utf8_to_raw_bytes(name, HOUSING_ESTATE_NAME_MAX_PAYLOAD_BYTES);
 
         diesel::update(
             housing_estates::table.filter(housing_estates::land_ident.eq(for_land_ident)),
@@ -482,7 +487,7 @@ impl WorldDatabase {
     }
 
     pub fn update_housing_greeting(&mut self, for_land_ident: i64, greeting: &str) -> bool {
-        let greeting = truncate_utf8_to_max_bytes(greeting, HOUSING_GREETING_MAX_PAYLOAD_BYTES);
+        let greeting = truncate_utf8_to_raw_bytes(greeting, HOUSING_GREETING_MAX_PAYLOAD_BYTES);
 
         diesel::update(
             housing_estates::table.filter(housing_estates::land_ident.eq(for_land_ident)),
@@ -1033,23 +1038,6 @@ fn migrate_housing_furniture_land_ident_on_connection(
     Ok(())
 }
 
-fn truncate_utf8_to_max_bytes(value: &str, max_bytes: usize) -> String {
-    if value.len() <= max_bytes {
-        return value.to_string();
-    }
-
-    let mut end = max_bytes;
-    while !value.is_char_boundary(end) {
-        end -= 1;
-    }
-
-    value[..end].to_string()
-}
-
-pub fn container_type_to_i32(container_type: ContainerType) -> i32 {
-    container_type as u16 as i32
-}
-
 fn summarize_housing_furniture_counts(rows: &[HousingFurniture]) -> HousingFurnitureCounts {
     let mut counts = HousingFurnitureCounts::default();
     counts.total = rows.len();
@@ -1112,32 +1100,6 @@ fn housing_plot_label(estate: &HousingEstate) -> String {
     }
 }
 
-fn housing_container_kind(container_type: i32) -> &'static str {
-    match container_type {
-        value if value == container_type_to_i32(ContainerType::HousingExteriorPlacedItems) => {
-            "outdoor_placed"
-        }
-        value if value == container_type_to_i32(ContainerType::HousingExteriorStoreroom) => {
-            "outdoor_storeroom"
-        }
-        value
-            if (container_type_to_i32(ContainerType::HousingInteriorPlacedItems1)
-                ..=container_type_to_i32(ContainerType::HousingInteriorPlacedItems12))
-                .contains(&value) =>
-        {
-            "indoor_placed"
-        }
-        value
-            if (container_type_to_i32(ContainerType::HousingInteriorStoreroom1)
-                ..=container_type_to_i32(ContainerType::HousingInteriorStoreroom11))
-                .contains(&value) =>
-        {
-            "indoor_storeroom"
-        }
-        _ => "other",
-    }
-}
-
 fn local_estate_house_id(spec: &HousingEstateSpec) -> HouseId {
     HouseId {
         unit: HouseUnit {
@@ -1170,10 +1132,6 @@ fn local_apartment_house_id(
         territory_type_id,
         world_id,
     }
-}
-
-fn valid_apartment_room_number(room_number: u16) -> bool {
-    (1..=MAX_APARTMENT_ROOM_NUMBER).contains(&room_number)
 }
 
 #[cfg(test)]

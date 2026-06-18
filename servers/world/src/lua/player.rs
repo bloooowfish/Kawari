@@ -4,7 +4,8 @@ use mlua::{LuaSerdeExt, UserData, UserDataFields, UserDataMethods, Value};
 use parking_lot::Mutex;
 
 use crate::{
-    GameData, MAX_APARTMENT_ROOM_NUMBER, PlayerData, RemakeMode, StatusEffects,
+    GameData, PlayerData, RemakeMode, StatusEffects,
+    housing::apartment::valid_apartment_room_number,
     inventory::{CrystalKind, CurrencyKind},
     zone_connection::{ActiveHousingWardContext, BaseParameters},
 };
@@ -735,10 +736,6 @@ impl LuaPlayer {
     fn call(&mut self, name: String) {
         self.queued_tasks.push(LuaTask::Call { name });
     }
-}
-
-fn valid_apartment_room_number(room_number: u16) -> bool {
-    (1..=MAX_APARTMENT_ROOM_NUMBER).contains(&room_number)
 }
 
 impl UserData for LuaPlayer {

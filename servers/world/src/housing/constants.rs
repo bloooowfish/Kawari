@@ -1,0 +1,8 @@
+use kawari::ipc::zone::PlotSize;
+
+pub const DEFAULT_LOCAL_HOUSING_TERRITORY_TYPE_ID: u16 = 340;
+pub const DEFAULT_LOCAL_HOUSING_WARD_INDEX: u8 = 0;
+pub const DEFAULT_LOCAL_HOUSING_DIVISION: u8 = 0;
+pub const DEFAULT_LOCAL_HOUSING_PLOT_INDEX: u8 = 5;
+pub const DEFAULT_LOCAL_HOUSING_PLOT_SIZE: PlotSize = PlotSize::Large;
+pub const DEFAULT_LOCAL_HOUSING_LAND_FLAGS: i32 = 0x0B;

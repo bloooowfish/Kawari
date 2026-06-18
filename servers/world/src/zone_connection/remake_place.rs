@@ -9,6 +9,7 @@ use serde::Deserialize;
 
 use crate::{
     HousingFurniture,
+    housing::container::container_type_to_i32,
     inventory::{
         HOUSING_INTERIOR_PLACED_PAGE_COUNT, MAX_HOUSING_INTERIOR_STORAGE, MAX_LARGE_STORAGE,
         indoor_container_for_flat_slot,
@@ -361,10 +362,6 @@ where
         created_by_content_id,
         updated_at: 0,
     })
-}
-
-fn container_type_to_i32(container_type: ContainerType) -> i32 {
-    container_type as u16 as i32
 }
 
 fn remake_place_interior_fixture_field(

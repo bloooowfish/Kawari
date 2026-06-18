@@ -13,9 +13,10 @@ use super::remake_place::{
     parse_remake_place_layout_file, resolve_latest_remake_place_preset_path,
     resolve_remake_place_preset_path,
 };
+use crate::housing::apartment::MAX_APARTMENT_ROOM_NUMBER;
 use crate::{
-    Event, HousingEstate, HousingEstateSpec, ItemInfoQuery, MAX_APARTMENT_ROOM_NUMBER, ToServer,
-    WorldDatabase, ZoneConnection,
+    Event, HousingEstate, HousingEstateSpec, ItemInfoQuery, ToServer, WorldDatabase,
+    ZoneConnection,
     event::EventHandler,
     inventory::{CrystalsStorage, CurrencyStorage, Item},
     lua::{

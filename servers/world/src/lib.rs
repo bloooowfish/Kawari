@@ -25,6 +25,8 @@ pub use database::{
 
 pub mod lua;
 
+pub mod housing;
+
 mod event;
 pub use event::{Event, EventHandler};
 

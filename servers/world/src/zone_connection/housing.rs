@@ -8,6 +8,7 @@ use super::{
 };
 use crate::common::{HousingFurnitureObject, HousingFurnitureObjectKey};
 use crate::gamedata::GameData;
+use crate::housing::apartment::{MAX_APARTMENT_ROOM_NUMBER, valid_apartment_room_number};
 use crate::inventory::{
     HousingInventory, Item, flat_slot_for_container, housing_container_slot_capacity,
     indoor_container_for_flat_slot, interior_placed_container_index, interior_placed_containers,
@@ -16,7 +17,7 @@ use crate::inventory::{
 use crate::{
     DEFAULT_LOCAL_HOUSING_DIVISION, DEFAULT_LOCAL_HOUSING_PLOT_INDEX,
     DEFAULT_LOCAL_HOUSING_WARD_INDEX, HousingEstate, HousingFurniture, HousingPlotLocation,
-    ItemInfoQuery, MAX_APARTMENT_ROOM_NUMBER, ToServer, WorldDatabase,
+    ItemInfoQuery, ToServer, WorldDatabase,
     lua::{HousingExteriorColorField, HousingExteriorField, HousingInteriorField},
 };
 use kawari::{
@@ -2771,10 +2772,6 @@ fn resolve_active_indoor_housing_estate(
 
 fn apartment_interior_zone_id(zone_id: u16) -> bool {
     APARTMENT_INTERIOR_TERRITORY_TYPE_IDS.contains(&zone_id)
-}
-
-fn valid_apartment_room_number(room_number: u16) -> bool {
-    (1..=MAX_APARTMENT_ROOM_NUMBER).contains(&room_number)
 }
 
 fn selected_or_default_local_estate(
