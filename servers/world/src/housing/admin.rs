@@ -1,18 +1,21 @@
-use kawari::ipc::kawari::clamp_housing_detail_json_for_ipc;
+use kawari::ipc::{
+    kawari::{
+        clamp_housing_admin_greeting_for_ipc, clamp_housing_admin_name_for_ipc,
+        clamp_housing_detail_json_for_ipc, clamp_housing_summary_json_for_ipc,
+    },
+    zone::PlotSize,
+};
 use serde::{Deserialize, Serialize};
 
-use crate::database::HousingEstate;
+use crate::{
+    database::{
+        HousingEstate, HousingEstateDetailQuery, HousingEstateSummaryQueryRow,
+        HousingFurnitureCounts,
+    },
+    housing::container::housing_container_kind,
+};
 
 const HOUSING_DETAIL_EXPORT_GUIDANCE: &str = "Housing detail exceeded the admin IPC payload limit. Use Export JSON for the full estate payload.";
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct HousingFurnitureCounts {
-    pub indoor_placed: usize,
-    pub indoor_storeroom: usize,
-    pub outdoor_placed: usize,
-    pub outdoor_storeroom: usize,
-    pub total: usize,
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HousingAdminEstateSummaryRow {
@@ -52,8 +55,104 @@ pub struct HousingEstateAdminDetail {
     pub furniture: Vec<HousingAdminFurnitureRow>,
 }
 
-pub fn summary_json(rows: &[HousingAdminEstateSummaryRow]) -> String {
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct HousingAdminSelectedEstate {
+    land_ident: i64,
+    house_id: i64,
+    owner_content_id: Option<i64>,
+    owner_name: String,
+    estate_name: String,
+    greeting: String,
+}
+
+pub fn summary_ipc_json(rows: &[HousingEstateSummaryQueryRow]) -> String {
+    let rows = admin_summary_rows(rows);
+    bounded_summary_json(&rows)
+}
+
+fn admin_summary_rows(rows: &[HousingEstateSummaryQueryRow]) -> Vec<HousingAdminEstateSummaryRow> {
+    rows.iter().map(admin_summary_row).collect()
+}
+
+fn admin_summary_row(row: &HousingEstateSummaryQueryRow) -> HousingAdminEstateSummaryRow {
+    HousingAdminEstateSummaryRow {
+        land_ident: row.estate.land_ident,
+        house_id: row.estate.house_id,
+        owner_content_id: row.estate.owner_content_id,
+        owner_name: row.estate.owner_name.clone(),
+        plot: housing_plot_label(&row.estate),
+        kind: housing_estate_kind(&row.estate).to_string(),
+        size: housing_estate_size(&row.estate).to_string(),
+        flags: row.estate.flags,
+        furniture_counts: row.furniture_counts.clone(),
+    }
+}
+
+fn summary_json(rows: &[HousingAdminEstateSummaryRow]) -> String {
     serde_json::to_string(rows).unwrap_or_else(|_| "[]".to_string())
+}
+
+fn bounded_summary_json(rows: &[HousingAdminEstateSummaryRow]) -> String {
+    let full_json = summary_json(rows);
+    if clamp_housing_summary_json_for_ipc(&full_json) == full_json {
+        return full_json;
+    }
+
+    let mut returned_rows = Vec::new();
+    let mut bounded_json = summary_overflow_json(rows.len(), &returned_rows);
+    for row in rows {
+        let mut candidate_rows = returned_rows.clone();
+        candidate_rows.push(row.clone());
+        let candidate = summary_overflow_json(rows.len(), &candidate_rows);
+        if clamp_housing_summary_json_for_ipc(&candidate) != candidate {
+            break;
+        }
+        returned_rows = candidate_rows;
+        bounded_json = candidate;
+    }
+
+    bounded_json
+}
+
+fn summary_overflow_json(total: usize, rows: &[HousingAdminEstateSummaryRow]) -> String {
+    serde_json::to_string(&serde_json::json!({
+        "estates": rows,
+        "truncated": true,
+        "total": total,
+        "returned": rows.len(),
+        "omitted": total.saturating_sub(rows.len()),
+        "message": "Housing summary was truncated to fit the admin IPC payload limit.",
+    }))
+    .unwrap_or_else(|_| r#"{"error":"housing_summary_backend_failed"}"#.to_string())
+}
+
+pub fn detail_from_query(query: HousingEstateDetailQuery) -> HousingEstateAdminDetail {
+    let furniture = query
+        .furniture
+        .into_iter()
+        .map(|row| HousingAdminFurnitureRow {
+            land_ident: row.land_ident,
+            container_type: row.container_type,
+            container_kind: housing_container_kind(row.container_type).to_string(),
+            slot: row.slot,
+            item_id: row.item_id,
+            catalog_id: row.catalog_id,
+            stain: row.stain,
+            placed: row.placed,
+            pos_x: row.pos_x,
+            pos_y: row.pos_y,
+            pos_z: row.pos_z,
+            rotation: row.rotation,
+            created_by_content_id: row.created_by_content_id,
+            updated_at: row.updated_at,
+        })
+        .collect();
+
+    HousingEstateAdminDetail {
+        estate: query.estate,
+        furniture_counts: query.furniture_counts,
+        furniture,
+    }
 }
 
 pub fn detail_json(detail: &HousingEstateAdminDetail) -> Option<String> {
@@ -70,13 +169,69 @@ pub fn detail_ipc_json(detail: &HousingEstateAdminDetail) -> Result<String, serd
     serde_json::to_string(&serde_json::json!({
         "error": "housing_detail_ipc_overflow",
         "truncated": true,
-        "estate": detail.estate,
+        "estate": selected_estate(&detail.estate),
         "land_ident": detail.estate.land_ident,
         "house_id": detail.estate.house_id,
         "furniture_counts": detail.furniture_counts,
         "furniture_omitted": detail.furniture.len(),
         "message": HOUSING_DETAIL_EXPORT_GUIDANCE,
     }))
+}
+
+fn selected_estate(estate: &HousingEstate) -> HousingAdminSelectedEstate {
+    HousingAdminSelectedEstate {
+        land_ident: estate.land_ident,
+        house_id: estate.house_id,
+        owner_content_id: estate.owner_content_id,
+        owner_name: estate.owner_name.clone(),
+        estate_name: clamp_housing_admin_name_for_ipc(&estate.estate_name),
+        greeting: clamp_housing_admin_greeting_for_ipc(&estate.greeting),
+    }
+}
+
+fn housing_estate_kind(estate: &HousingEstate) -> &'static str {
+    if estate.is_apartment {
+        "apartment"
+    } else if estate.flags & 0x10 != 0 {
+        "free_company_estate"
+    } else {
+        "personal_estate"
+    }
+}
+
+fn housing_estate_size(estate: &HousingEstate) -> &'static str {
+    if estate.is_apartment {
+        "apartment"
+    } else {
+        match PlotSize::from_repr(estate.plot_size as u8) {
+            Some(PlotSize::Small) => "small",
+            Some(PlotSize::Medium) => "medium",
+            Some(PlotSize::Large) => "large",
+            _ => "unknown",
+        }
+    }
+}
+
+fn housing_plot_label(estate: &HousingEstate) -> String {
+    if estate.is_apartment {
+        format!(
+            "Ward {} Apartment {}",
+            estate.ward_index + 1,
+            estate.room_number
+        )
+    } else {
+        let subdivision = if estate.division != 0 {
+            " Subdivision"
+        } else {
+            ""
+        };
+        format!(
+            "Ward {}{} Plot {}",
+            estate.ward_index + 1,
+            subdivision,
+            estate.plot_index + 1
+        )
+    }
 }
 
 #[cfg(test)]
@@ -163,6 +318,46 @@ mod tests {
                 json: String::new(),
             })
             .calc_size() as usize
+        );
+    }
+
+    #[test]
+    fn housing_admin_summary_ipc_json_returns_partial_rows_when_full_payload_overflows() {
+        let rows = (0..200)
+            .map(|idx| HousingAdminEstateSummaryRow {
+                land_ident: 42 + idx,
+                house_id: 9001 + idx,
+                owner_content_id: Some(100 + idx),
+                owner_name: format!("Tester-{idx:03}"),
+                plot: format!("Ward 1 Plot {}", idx + 1),
+                kind: "free_company_estate".to_string(),
+                size: "large".to_string(),
+                flags: 0x10,
+                furniture_counts: HousingFurnitureCounts {
+                    indoor_placed: 1,
+                    indoor_storeroom: 2,
+                    outdoor_placed: 3,
+                    outdoor_storeroom: 4,
+                    total: 10,
+                },
+            })
+            .collect::<Vec<_>>();
+
+        let json = bounded_summary_json(&rows);
+        assert!(json.len() <= HOUSING_ADMIN_SUMMARY_JSON_MAX_BYTES);
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&json).expect("summary fallback JSON should parse");
+        assert_eq!(parsed["truncated"], true);
+        assert!(
+            parsed["omitted"]
+                .as_u64()
+                .is_some_and(|omitted| omitted > 0)
+        );
+        assert!(
+            parsed["estates"]
+                .as_array()
+                .is_some_and(|estates| !estates.is_empty())
         );
     }
 
@@ -306,5 +501,31 @@ mod tests {
             })
             .calc_size() as usize
         );
+    }
+
+    #[test]
+    fn housing_admin_detail_ipc_json_fallback_omits_verbose_estate_json() {
+        let mut estate = estate();
+        estate.exterior_json = "e".repeat(HOUSING_ADMIN_DETAIL_JSON_MAX_BYTES);
+        estate.interior_json = "i".repeat(HOUSING_ADMIN_DETAIL_JSON_MAX_BYTES);
+
+        let detail = HousingEstateAdminDetail {
+            estate,
+            furniture_counts: HousingFurnitureCounts::default(),
+            furniture: Vec::new(),
+        };
+
+        let bounded = detail_ipc_json(&detail).expect("bounded detail should serialize");
+        assert!(bounded.len() <= HOUSING_ADMIN_DETAIL_JSON_MAX_BYTES);
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&bounded).expect("bounded fallback should parse");
+        assert_eq!(
+            parsed["error"].as_str(),
+            Some("housing_detail_ipc_overflow")
+        );
+        assert_eq!(parsed["estate"]["land_ident"].as_i64(), Some(42));
+        assert!(parsed["estate"].get("exterior_json").is_none());
+        assert!(parsed["estate"].get("interior_json").is_none());
     }
 }

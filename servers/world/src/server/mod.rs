@@ -11,7 +11,7 @@ use std::{
 use tokio::sync::mpsc::Receiver;
 
 use crate::{
-    GameData, Navmesh, SpawnAllocator,
+    GameData, HousingPlotLocation, Navmesh, SpawnAllocator,
     lua::KawariLua,
     server::{
         action::{
@@ -91,28 +91,41 @@ struct WorldServer {
 
 impl WorldServer {
     /// Ensures an instance exists, and creates one if not found.
-    fn ensure_exists(&mut self, zone_id: u16, game_data: &mut GameData) -> &mut Instance {
-        let is_public_instance;
-        if let Some(intended_use) = game_data.get_intended_use(zone_id as u32) {
-            is_public_instance = !is_private_area(intended_use);
-        } else {
-            is_public_instance = true; // Fall back to assuming it's public I guess
-        }
+    fn ensure_exists(
+        &mut self,
+        zone_id: u16,
+        game_data: &mut GameData,
+        housing_plot_location: Option<HousingPlotLocation>,
+    ) -> &mut Instance {
+        let intended_use = game_data.get_intended_use(zone_id as u32);
+        let is_public_instance =
+            intended_use.is_none_or(|intended_use| !is_private_area(intended_use));
+        let housing_ward_index =
+            housing_ward_index_for_public_instance(zone_id, intended_use, housing_plot_location);
 
         if is_public_instance {
             // create a new instance if necessary
-            if !self
-                .instances
-                .iter()
-                .any(|x| x.zone.id == zone_id && x.content_finder_condition_id == 0)
-            {
-                tracing::info!("Creating new public instance for {zone_id}!");
-                self.instances.push(Instance::new(zone_id, game_data));
+            if !self.instances.iter().any(|x| {
+                x.zone.id == zone_id
+                    && x.content_finder_condition_id == 0
+                    && x.housing_ward_index == housing_ward_index
+            }) {
+                tracing::info!(
+                    housing_ward_index,
+                    "Creating new public instance for {zone_id}!"
+                );
+                let mut instance = Instance::new(zone_id, game_data);
+                instance.housing_ward_index = housing_ward_index;
+                self.instances.push(instance);
             }
 
             self.instances
                 .iter_mut()
-                .find(|x| x.zone.id == zone_id && x.content_finder_condition_id == 0)
+                .find(|x| {
+                    x.zone.id == zone_id
+                        && x.content_finder_condition_id == 0
+                        && x.housing_ward_index == housing_ward_index
+                })
                 .unwrap()
         } else {
             tracing::info!("Creating new private instance for {zone_id}!");
@@ -245,6 +258,20 @@ impl WorldServer {
                 .any(|x| matches!(x.1, NetworkedActor::Player { .. }))
         });
     }
+}
+
+fn housing_ward_index_for_public_instance(
+    zone_id: u16,
+    intended_use: Option<TerritoryIntendedUse>,
+    housing_plot_location: Option<HousingPlotLocation>,
+) -> Option<u8> {
+    if !matches!(intended_use, Some(TerritoryIntendedUse::HousingOutdoor)) {
+        return None;
+    }
+
+    housing_plot_location
+        .filter(|location| location.territory_type_id == zone_id)
+        .map(|location| location.ward_index)
 }
 
 // TODO: move elsewhere...
@@ -1130,7 +1157,8 @@ pub async fn server_main_loop(
                     let instance;
                     {
                         let mut game_data = game_data.lock();
-                        instance = data.ensure_exists(zone_id, &mut game_data);
+                        instance =
+                            data.ensure_exists(zone_id, &mut game_data, housing_plot_location);
                     }
 
                     instance.insert_empty_actor(from_actor_id);
@@ -2143,6 +2171,7 @@ pub async fn server_main_loop(
                     old_zone_id,
                     old_position,
                     old_rotation,
+                    old_housing_plot_location,
                 ) => {
                     let mut data = data.lock();
                     let mut network = network.lock();
@@ -2156,7 +2185,11 @@ pub async fn server_main_loop(
                     let instance;
                     {
                         let mut game_data = game_data.lock();
-                        instance = data.ensure_exists(old_zone_id, &mut game_data);
+                        instance = data.ensure_exists(
+                            old_zone_id,
+                            &mut game_data,
+                            old_housing_plot_location,
+                        );
                     }
 
                     instance.insert_empty_actor(from_actor_id);
@@ -2316,6 +2349,23 @@ pub async fn server_main_loop(
                     if let Err(err) = lua.init(game_data.clone()) {
                         tracing::warn!("Failed to load Init.lua: {:?}", err);
                     }
+                }
+                ToServer::HousingEstateInvalidated {
+                    land_ident,
+                    clear_inventory,
+                    clear_active_estate,
+                    furniture_scopes,
+                } => {
+                    let mut network = network.lock();
+                    network.send_to_all(
+                        FromServer::HousingEstateInvalidated {
+                            land_ident,
+                            clear_inventory,
+                            clear_active_estate,
+                            furniture_scopes,
+                        },
+                        DestinationNetwork::ZoneClients,
+                    );
                 }
                 ToServer::Dismounted(from_actor_id, party_id) => {
                     let mut network = network.lock();
@@ -2537,5 +2587,49 @@ mod tests {
         let actor = instance.find_actor(actor_id).unwrap();
 
         assert!(should_process_player_logic_tick_actor(actor));
+    }
+
+    #[test]
+    fn housing_outdoor_public_instance_key_uses_matching_plot_ward() {
+        let location = HousingPlotLocation {
+            territory_type_id: 340,
+            ward_index: 2,
+            raw_plot_index: 35,
+        };
+
+        assert_eq!(
+            housing_ward_index_for_public_instance(
+                340,
+                Some(TerritoryIntendedUse::HousingOutdoor),
+                Some(location),
+            ),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn housing_outdoor_public_instance_key_ignores_other_zone_or_non_housing() {
+        let location = HousingPlotLocation {
+            territory_type_id: 340,
+            ward_index: 2,
+            raw_plot_index: 35,
+        };
+
+        assert_eq!(
+            housing_ward_index_for_public_instance(
+                341,
+                Some(TerritoryIntendedUse::HousingOutdoor),
+                Some(location),
+            ),
+            None
+        );
+        assert_eq!(
+            housing_ward_index_for_public_instance(
+                340,
+                Some(TerritoryIntendedUse::HousingIndoor),
+                Some(location),
+            ),
+            None
+        );
     }
 }

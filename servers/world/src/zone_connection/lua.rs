@@ -1248,6 +1248,7 @@ impl ZoneConnection {
                             self.old_zone_id,
                             self.old_position,
                             self.old_rotation,
+                            self.old_housing_plot_location,
                         ))
                         .await;
                 }

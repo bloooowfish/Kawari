@@ -182,6 +182,7 @@ pub struct ZoneConnection {
     pub old_zone_id: u16,
     pub old_position: Position,
     pub old_rotation: f32,
+    pub old_housing_plot_location: Option<HousingPlotLocation>,
 
     /// Information about the current content.
     pub content_handler_id: HandlerId,
@@ -518,6 +519,7 @@ mod tests {
         let position = Position(Vec3::new(1.0, 2.0, 3.0));
         let mut pending = Some(HousingPlotLocation {
             territory_type_id: 340,
+            ward_index: 2,
             raw_plot_index: 5,
         });
 
@@ -531,6 +533,7 @@ mod tests {
             first.housing_plot_location,
             Some(HousingPlotLocation {
                 territory_type_id: 340,
+                ward_index: 2,
                 raw_plot_index: 5,
             })
         );

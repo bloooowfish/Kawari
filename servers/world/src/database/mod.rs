@@ -9,7 +9,10 @@ pub use crate::housing::{
         DEFAULT_LOCAL_HOUSING_TERRITORY_TYPE_ID, DEFAULT_LOCAL_HOUSING_WARD_INDEX,
     },
 };
-pub use housing::HousingEstateSpec;
+pub use housing::{
+    HousingEstateDetailQuery, HousingEstateExport, HousingEstateSpec, HousingEstateSummaryQueryRow,
+    HousingFurnitureCounts,
+};
 mod linkshell;
 mod mail;
 

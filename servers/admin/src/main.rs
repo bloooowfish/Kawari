@@ -252,6 +252,26 @@ fn housing_mutation_response_message(
     }
 }
 
+fn housing_export_response_message(
+    response: Option<CustomIpcSegment>,
+    unexpected_message: &str,
+    timeout_message: &str,
+) -> String {
+    match response {
+        Some(response) => match response.data {
+            CustomIpcData::HousingEstateExported { path, message } => {
+                if path.is_empty() {
+                    message
+                } else {
+                    format!("{message} Path: {path}")
+                }
+            }
+            _ => unexpected_message.to_string(),
+        },
+        None => timeout_message.to_string(),
+    }
+}
+
 #[derive(Debug, Default, PartialEq)]
 struct HousingSummaryView {
     estates: Vec<serde_json::Value>,
@@ -289,6 +309,28 @@ fn parse_housing_summary_json(json: &str) -> HousingSummaryView {
                 .get("truncated")
                 .and_then(serde_json::Value::as_bool)
                 .unwrap_or(false);
+
+            if let Some(estates) = object
+                .get("estates")
+                .or_else(|| object.get("rows"))
+                .and_then(serde_json::Value::as_array)
+            {
+                let status_message = object
+                    .get("message")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string)
+                    .or_else(|| {
+                        truncated.then(|| {
+                            "Housing summary was truncated to fit the admin IPC payload limit."
+                                .to_string()
+                        })
+                    });
+
+                return HousingSummaryView {
+                    estates: estates.clone(),
+                    status_message,
+                };
+            }
 
             let status_message = error
                 .map(|value| parse_housing_summary_error_message(value, truncated))
@@ -467,27 +509,21 @@ async fn update_housing_text(Form(input): Form<HousingUpdateTextForm>) -> Redire
     housing_redirect_after_post(Some(input.land_ident), status, &message)
 }
 
-async fn export_housing_estate(Form(input): Form<HousingLandIdentForm>) -> Html<String> {
-    let message =
-        match send_custom_world_packet(CustomIpcSegment::new(CustomIpcData::ExportHousingEstate {
+async fn export_housing_estate(Form(input): Form<HousingLandIdentForm>) -> Redirect {
+    let message = housing_export_response_message(
+        send_custom_world_packet(CustomIpcSegment::new(CustomIpcData::ExportHousingEstate {
             land_ident: input.land_ident,
         }))
-        .await
-        {
-            Some(response) => match response.data {
-                CustomIpcData::HousingEstateExported { path, message } => {
-                    if path.is_empty() {
-                        message
-                    } else {
-                        format!("{message} Path: {path}")
-                    }
-                }
-                _ => "Unexpected response while exporting estate.".to_string(),
-            },
-            None => "World server did not respond to export estate.".to_string(),
-        };
+        .await,
+        "Unexpected response while exporting estate.",
+        "World server did not respond to export estate.",
+    );
 
-    render_housing_page(Some(input.land_ident), Some(message)).await
+    housing_redirect_after_post(
+        Some(input.land_ident),
+        housing_status_for_message(&message),
+        &message,
+    )
 }
 
 async fn import_housing_estate(Form(input): Form<HousingImportForm>) -> Redirect {
@@ -600,9 +636,9 @@ mod tests {
 
     use super::{
         HousingQuery, HousingUpdateTextForm, build_import_housing_estate_request,
-        housing_query_status_message, housing_redirect_after_post, housing_redirect_location,
-        parse_housing_detail_response, parse_housing_summary_json, setup_default_environment,
-        update_housing_estate_text_warning,
+        housing_export_response_message, housing_query_status_message, housing_redirect_after_post,
+        housing_redirect_location, parse_housing_detail_response, parse_housing_summary_json,
+        setup_default_environment, update_housing_estate_text_warning,
     };
 
     static CWD_LOCK: Mutex<()> = Mutex::new(());
@@ -647,7 +683,21 @@ mod tests {
     }
 
     #[test]
-    fn housing_summary_overflow_object_returns_status_message() {
+    fn housing_summary_overflow_object_returns_partial_rows_and_status_message() {
+        let summary = parse_housing_summary_json(
+            r#"{"estates":[{"land_ident":101,"owner_name":"Tester"}],"truncated":true,"total":10,"returned":1,"omitted":9,"message":"Housing summary was truncated to fit the admin IPC payload limit."}"#,
+        );
+
+        assert_eq!(summary.estates.len(), 1);
+        assert_eq!(summary.estates[0]["land_ident"], 101);
+        assert_eq!(
+            summary.status_message,
+            Some("Housing summary was truncated to fit the admin IPC payload limit.".to_string())
+        );
+    }
+
+    #[test]
+    fn housing_summary_legacy_overflow_error_object_returns_status_message() {
         let summary = parse_housing_summary_json(
             r#"{"error":"housing_summary_ipc_overflow","truncated":true}"#,
         );
@@ -748,6 +798,25 @@ mod tests {
                 .to_str()
                 .expect("Location should be valid ASCII"),
             "/housing?status=error&message=Import%20path%20is%20required."
+        );
+    }
+
+    #[test]
+    fn housing_export_response_message_includes_export_path() {
+        let message = housing_export_response_message(
+            Some(CustomIpcSegment::new(
+                CustomIpcData::HousingEstateExported {
+                    path: "housing-exports/estate-101.json".to_string(),
+                    message: "Exported estate 101.".to_string(),
+                },
+            )),
+            "Unexpected response while exporting estate.",
+            "World server did not respond to export estate.",
+        );
+
+        assert_eq!(
+            message,
+            "Exported estate 101. Path: housing-exports/estate-101.json"
         );
     }
 

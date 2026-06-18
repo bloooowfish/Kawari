@@ -7,10 +7,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     housing::{
-        admin::{
-            HousingAdminEstateSummaryRow, HousingAdminFurnitureRow, HousingEstateAdminDetail,
-            HousingFurnitureCounts,
-        },
         apartment::valid_apartment_room_number,
         constants::{
             DEFAULT_LOCAL_HOUSING_DIVISION, DEFAULT_LOCAL_HOUSING_LAND_FLAGS,
@@ -36,6 +32,28 @@ const HOUSING_GREETING_MAX_PAYLOAD_BYTES: usize = 192;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HousingEstateExport {
     pub estate: HousingEstate,
+    pub furniture: Vec<HousingFurniture>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct HousingFurnitureCounts {
+    pub indoor_placed: usize,
+    pub indoor_storeroom: usize,
+    pub outdoor_placed: usize,
+    pub outdoor_storeroom: usize,
+    pub total: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct HousingEstateSummaryQueryRow {
+    pub estate: HousingEstate,
+    pub furniture_counts: HousingFurnitureCounts,
+}
+
+#[derive(Debug, Clone)]
+pub struct HousingEstateDetailQuery {
+    pub estate: HousingEstate,
+    pub furniture_counts: HousingFurnitureCounts,
     pub furniture: Vec<HousingFurniture>,
 }
 
@@ -563,7 +581,7 @@ impl WorldDatabase {
             .unwrap_or_default()
     }
 
-    pub fn housing_summary_rows_for_admin(&mut self) -> Vec<HousingAdminEstateSummaryRow> {
+    pub fn housing_estate_summary_query_rows(&mut self) -> Vec<HousingEstateSummaryQueryRow> {
         let estates = housing_estates::table
             .select(HousingEstate::as_select())
             .order((
@@ -583,25 +601,18 @@ impl WorldDatabase {
             .into_iter()
             .map(|estate| {
                 let furniture = self.list_all_housing_furniture(estate.land_ident);
-                HousingAdminEstateSummaryRow {
-                    land_ident: estate.land_ident,
-                    house_id: estate.house_id,
-                    owner_content_id: estate.owner_content_id,
-                    owner_name: estate.owner_name.clone(),
-                    plot: housing_plot_label(&estate),
-                    kind: housing_estate_kind(&estate).to_string(),
-                    size: housing_estate_size(&estate).to_string(),
-                    flags: estate.flags,
+                HousingEstateSummaryQueryRow {
+                    estate,
                     furniture_counts: summarize_housing_furniture_counts(&furniture),
                 }
             })
             .collect()
     }
 
-    pub fn housing_estate_detail_for_admin(
+    pub fn housing_estate_detail_query(
         &mut self,
         land_ident: i64,
-    ) -> Option<HousingEstateAdminDetail> {
+    ) -> Option<HousingEstateDetailQuery> {
         let estate = housing_estates::table
             .select(HousingEstate::as_select())
             .filter(housing_estates::land_ident.eq(land_ident))
@@ -609,27 +620,8 @@ impl WorldDatabase {
             .ok()?;
         let furniture = self.list_all_housing_furniture(land_ident);
         let furniture_counts = summarize_housing_furniture_counts(&furniture);
-        let furniture = furniture
-            .into_iter()
-            .map(|row| HousingAdminFurnitureRow {
-                land_ident: row.land_ident,
-                container_type: row.container_type,
-                container_kind: housing_container_kind(row.container_type).to_string(),
-                slot: row.slot,
-                item_id: row.item_id,
-                catalog_id: row.catalog_id,
-                stain: row.stain,
-                placed: row.placed,
-                pos_x: row.pos_x,
-                pos_y: row.pos_y,
-                pos_z: row.pos_z,
-                rotation: row.rotation,
-                created_by_content_id: row.created_by_content_id,
-                updated_at: row.updated_at,
-            })
-            .collect();
 
-        Some(HousingEstateAdminDetail {
+        Some(HousingEstateDetailQuery {
             estate,
             furniture_counts,
             furniture,
@@ -966,51 +958,6 @@ fn summarize_housing_furniture_counts(rows: &[HousingFurniture]) -> HousingFurni
     }
 
     counts
-}
-
-fn housing_estate_kind(estate: &HousingEstate) -> &'static str {
-    if estate.is_apartment {
-        "apartment"
-    } else if estate.flags & 0x10 != 0 {
-        "free_company_estate"
-    } else {
-        "personal_estate"
-    }
-}
-
-fn housing_estate_size(estate: &HousingEstate) -> &'static str {
-    if estate.is_apartment {
-        "apartment"
-    } else {
-        match PlotSize::from_repr(estate.plot_size as u8) {
-            Some(PlotSize::Small) => "small",
-            Some(PlotSize::Medium) => "medium",
-            Some(PlotSize::Large) => "large",
-            _ => "unknown",
-        }
-    }
-}
-
-fn housing_plot_label(estate: &HousingEstate) -> String {
-    if estate.is_apartment {
-        format!(
-            "Ward {} Apartment {}",
-            estate.ward_index + 1,
-            estate.room_number
-        )
-    } else {
-        let subdivision = if estate.division != 0 {
-            " Subdivision"
-        } else {
-            ""
-        };
-        format!(
-            "Ward {}{} Plot {}",
-            estate.ward_index + 1,
-            subdivision,
-            estate.plot_index + 1
-        )
-    }
 }
 
 fn local_estate_house_id(spec: &HousingEstateSpec) -> HouseId {
@@ -2494,7 +2441,7 @@ mod tests {
     }
 
     #[test]
-    fn housing_summary_rows_for_admin_returns_compact_rows_with_furniture_counts() {
+    fn housing_estate_summary_query_rows_return_raw_estates_with_furniture_counts() {
         let mut db = test_db();
         let estate = db.ensure_local_estate(100, "Tester", 67);
 
@@ -2527,16 +2474,13 @@ mod tests {
             ..Default::default()
         });
 
-        let rows = db.housing_summary_rows_for_admin();
+        let rows = db.housing_estate_summary_query_rows();
         assert_eq!(rows.len(), 1);
         let row = &rows[0];
 
-        assert_eq!(row.land_ident, estate.land_ident);
-        assert_eq!(row.owner_name, "Tester");
-        assert_eq!(row.kind, "personal_estate");
-        assert_eq!(row.size, "large");
-        assert_eq!(row.plot, "Ward 1 Plot 6");
-        assert_eq!(row.flags, estate.flags);
+        assert_eq!(row.estate.land_ident, estate.land_ident);
+        assert_eq!(row.estate.owner_name, "Tester");
+        assert_eq!(row.estate.flags, estate.flags);
         assert_eq!(row.furniture_counts.indoor_placed, 1);
         assert_eq!(row.furniture_counts.indoor_storeroom, 1);
         assert_eq!(row.furniture_counts.outdoor_placed, 1);
@@ -2545,7 +2489,7 @@ mod tests {
     }
 
     #[test]
-    fn housing_summary_rows_for_admin_exclude_verbose_estate_fields() {
+    fn housing_estate_summary_query_rows_preserve_query_order() {
         let mut db = test_db();
         let base = db.ensure_local_estate(100, "Tester", 67);
 
@@ -2562,14 +2506,16 @@ mod tests {
             db.insert_housing_estate_for_test(estate);
         }
 
-        let rows = db.housing_summary_rows_for_admin();
+        let rows = db.housing_estate_summary_query_rows();
         assert_eq!(rows.len(), 11);
-        assert!(rows.iter().all(|row| !row.owner_name.is_empty()));
+        assert_eq!(rows[0].estate.land_ident, base.land_ident);
+        assert_eq!(rows[0].estate.estate_name, base.estate_name);
+        assert!(rows.iter().all(|row| !row.estate.owner_name.is_empty()));
         assert!(rows.iter().all(|row| row.furniture_counts.total == 0));
     }
 
     #[test]
-    fn housing_estate_detail_for_admin_includes_counts_and_furniture_rows() {
+    fn housing_estate_detail_query_includes_counts_and_raw_furniture_rows() {
         let mut db = test_db();
         let estate = db.ensure_local_estate(100, "Tester", 67);
 
@@ -2599,7 +2545,7 @@ mod tests {
         });
 
         let detail = db
-            .housing_estate_detail_for_admin(estate.land_ident)
+            .housing_estate_detail_query(estate.land_ident)
             .expect("detail should exist for local estate");
 
         assert_eq!(detail.estate.land_ident, estate.land_ident);
@@ -2609,16 +2555,22 @@ mod tests {
         assert_eq!(detail.furniture_counts.total, 2);
         assert_eq!(detail.furniture.len(), 2);
         assert_eq!(detail.furniture[0].item_id, 2000);
-        assert_eq!(detail.furniture[0].container_kind, "indoor_placed");
+        assert_eq!(
+            detail.furniture[0].container_type,
+            container_type_to_i32(ContainerType::HousingInteriorPlacedItems1)
+        );
         assert_eq!(detail.furniture[1].item_id, 2001);
-        assert_eq!(detail.furniture[1].container_kind, "outdoor_storeroom");
+        assert_eq!(
+            detail.furniture[1].container_type,
+            container_type_to_i32(ContainerType::HousingExteriorStoreroom)
+        );
     }
 
     #[test]
-    fn housing_estate_detail_for_admin_returns_none_when_estate_missing() {
+    fn housing_estate_detail_query_returns_none_when_estate_missing() {
         let mut db = test_db();
 
-        assert!(db.housing_estate_detail_for_admin(i64::MAX).is_none());
+        assert!(db.housing_estate_detail_query(i64::MAX).is_none());
     }
 
     #[test]

@@ -1,7 +1,9 @@
 use std::collections::VecDeque;
 
 use crate::StatusEffects;
-use crate::common::{HousingFurnitureObject, HousingFurnitureObjectKey};
+use crate::common::{
+    HousingFurnitureObject, HousingFurnitureObjectKey, HousingFurnitureObjectScope,
+};
 use crate::gamedata::HousingStrikingDummyNpcData;
 use crate::server::actor::{NetworkedActor, NpcState};
 use crate::server::instance::Instance;
@@ -23,28 +25,54 @@ const HOUSING_STRIKING_DUMMY_LEVEL: u8 = 1;
 const HOUSING_STRIKING_DUMMY_LINK_RANGE: u8 = 20;
 pub const HOUSING_STRIKING_DUMMY_HEALTH: u32 = 1_000_000_000;
 
-pub fn housing_furniture_tracking_id(key: HousingFurnitureObjectKey) -> u16 {
+pub fn housing_furniture_tracking_id(key: HousingFurnitureObjectKey) -> u32 {
     if key.indoors {
-        key.slot
+        key.slot as u32
     } else {
-        ((key.plot_index as u16) << 8) | (key.slot & 0x00FF)
+        ((key.ward_index as u32) << 16)
+            | ((key.plot_index as u32) << 8)
+            | (key.slot as u32 & 0x00FF)
     }
 }
 
 pub fn housing_furniture_actor_id(key: HousingFurnitureObjectKey) -> ObjectId {
-    let tracking_id = housing_furniture_tracking_id(key) as u32;
+    let tracking_id = housing_furniture_tracking_id(key);
 
     ObjectId(HOUSING_ENTITY_PREFIX | tracking_id)
 }
 
 pub fn housing_striking_dummy_actor_id(key: HousingFurnitureObjectKey) -> ObjectId {
-    let tracking_id = housing_furniture_tracking_id(key) as u32;
+    let tracking_id = housing_furniture_tracking_id(key);
     ObjectId(HOUSING_STRIKING_DUMMY_ENTITY_PREFIX | tracking_id)
 }
 
 fn housing_striking_dummy_gimmick_id(key: HousingFurnitureObjectKey) -> u32 {
-    let tracking_id = housing_furniture_tracking_id(key) as u32;
+    let tracking_id = housing_furniture_tracking_id(key);
     HOUSING_STRIKING_DUMMY_GIMMICK_PREFIX | tracking_id
+}
+
+fn housing_furniture_tracking_id_from_actor_id(actor_id: ObjectId) -> Option<u32> {
+    let prefix = actor_id.0 & 0xFF00_0000;
+    if prefix != HOUSING_ENTITY_PREFIX && prefix != HOUSING_STRIKING_DUMMY_ENTITY_PREFIX {
+        return None;
+    }
+
+    Some(actor_id.0 & 0x00FF_FFFF)
+}
+
+fn housing_furniture_actor_matches_scope(
+    actor_id: ObjectId,
+    scope: HousingFurnitureObjectScope,
+) -> bool {
+    let Some(tracking_id) = housing_furniture_tracking_id_from_actor_id(actor_id) else {
+        return false;
+    };
+
+    if scope.indoors {
+        return true;
+    }
+
+    (tracking_id >> 16) as u8 == scope.ward_index && (tracking_id >> 8) as u8 == scope.plot_index
 }
 
 pub fn build_housing_furniture_spawn(
@@ -242,6 +270,26 @@ pub fn remove_housing_furniture_object_networked(
     removed
 }
 
+pub fn remove_housing_furniture_objects_for_scope_networked(
+    instance: &mut Instance,
+    network: &mut NetworkState,
+    scope: HousingFurnitureObjectScope,
+) -> usize {
+    let actor_ids = instance
+        .actors
+        .keys()
+        .copied()
+        .filter(|actor_id| housing_furniture_actor_matches_scope(*actor_id, scope))
+        .collect::<Vec<_>>();
+    let removed_count = actor_ids.len();
+
+    for actor_id in actor_ids {
+        network.remove_actor(instance, actor_id);
+    }
+
+    removed_count
+}
+
 pub fn spawn_housing_furniture_object_for_current_clients(
     instance: &Instance,
     network: &mut NetworkState,
@@ -371,6 +419,7 @@ mod tests {
             position: Position(Vec3::new(1.0, 2.0, 3.0)),
             rotation: 1.25,
             indoors,
+            ward_index: 2,
             plot_index,
         }
     }
@@ -391,6 +440,7 @@ mod tests {
         let key = HousingFurnitureObjectKey {
             slot: 51,
             indoors: true,
+            ward_index: 7,
             plot_index: 7,
         };
 
@@ -402,6 +452,7 @@ mod tests {
         let key = HousingFurnitureObjectKey {
             slot: 51,
             indoors: true,
+            ward_index: 7,
             plot_index: 7,
         };
 
@@ -415,10 +466,30 @@ mod tests {
         let key = HousingFurnitureObjectKey {
             slot: 9,
             indoors: false,
+            ward_index: 2,
             plot_index: 5,
         };
 
-        assert_eq!(housing_furniture_tracking_id(key), 0x0509);
+        assert_eq!(housing_furniture_tracking_id(key), 0x020509);
+    }
+
+    #[test]
+    fn outdoor_actor_id_includes_ward_index() {
+        let first_ward = HousingFurnitureObjectKey {
+            slot: 9,
+            indoors: false,
+            ward_index: 2,
+            plot_index: 5,
+        };
+        let second_ward = HousingFurnitureObjectKey {
+            ward_index: 3,
+            ..first_ward
+        };
+
+        assert_ne!(
+            housing_furniture_actor_id(first_ward),
+            housing_furniture_actor_id(second_ward)
+        );
     }
 
     #[test]
@@ -543,6 +614,64 @@ mod tests {
         assert!(remove_housing_furniture_object(&mut instance, key));
 
         assert!(instance.find_actor(actor_id).is_none());
+    }
+
+    #[test]
+    fn remove_scope_deletes_indoor_housing_objects() {
+        let mut instance = Instance::default();
+        let mut network = NetworkState::default();
+        let object = furniture(10, true, 0);
+        let actor_id = upsert_housing_furniture_object(&mut instance, object, true, None).unwrap();
+
+        let removed = remove_housing_furniture_objects_for_scope_networked(
+            &mut instance,
+            &mut network,
+            HousingFurnitureObjectScope {
+                territory_type_id: 340,
+                world_id: 21,
+                ward_index: 2,
+                division: 0,
+                indoors: true,
+                plot_index: 0,
+            },
+        );
+
+        assert_eq!(removed, 1);
+        assert!(instance.find_actor(actor_id).is_none());
+    }
+
+    #[test]
+    fn remove_scope_deletes_only_matching_outdoor_plot_objects() {
+        let mut instance = Instance::default();
+        let mut network = NetworkState::default();
+        let matching = furniture(9, false, 5);
+        let other_plot = furniture(9, false, 6);
+        let mut other_ward = matching;
+        other_ward.ward_index = 3;
+        let matching_actor =
+            upsert_housing_furniture_object(&mut instance, matching, true, None).unwrap();
+        let other_actor =
+            upsert_housing_furniture_object(&mut instance, other_plot, true, None).unwrap();
+        let other_ward_actor =
+            upsert_housing_furniture_object(&mut instance, other_ward, true, None).unwrap();
+
+        let removed = remove_housing_furniture_objects_for_scope_networked(
+            &mut instance,
+            &mut network,
+            HousingFurnitureObjectScope {
+                territory_type_id: 340,
+                world_id: 21,
+                ward_index: 2,
+                division: 0,
+                indoors: false,
+                plot_index: 5,
+            },
+        );
+
+        assert_eq!(removed, 1);
+        assert!(instance.find_actor(matching_actor).is_none());
+        assert!(instance.find_actor(other_actor).is_some());
+        assert!(instance.find_actor(other_ward_actor).is_some());
     }
 
     #[test]

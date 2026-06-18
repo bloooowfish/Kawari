@@ -198,6 +198,7 @@ async fn initial_setup(
                 let mut connection = CustomIpcConnection {
                     socket,
                     state: ConnectionState::None,
+                    handle: handle.clone(),
                     database: database.clone(),
                     gamedata: game_data.clone(),
                 };
@@ -245,6 +246,7 @@ async fn initial_setup(
                     old_zone_id: 0,
                     old_position: Position::default(),
                     old_rotation: 0.0,
+                    old_housing_plot_location: None,
                     content_handler_id: HandlerId::default(),
                     teleport_reason: TeleportReason::NotSpecified,
                     active_minion: 0,
@@ -1390,6 +1392,7 @@ async fn process_packet(
                                             connection.old_zone_id,
                                             connection.old_position,
                                             connection.old_rotation,
+                                            connection.old_housing_plot_location,
                                         ))
                                         .await;
                                 }
@@ -3915,6 +3918,7 @@ async fn process_packet(
                                         position: placement.position,
                                         rotation: placement.rotation,
                                         indoors: placement.indoors,
+                                        ward_index: placement.ward_index,
                                         plot_index: placement.plot_index,
                                     },
                                     placement.container,
@@ -4288,6 +4292,21 @@ async fn process_server_msg(
             FromServer::PacketSegment(ipc, from_actor_id) => {
                 connection.send_ipc_from(from_actor_id, ipc).await;
             }
+            FromServer::HousingEstateInvalidated {
+                land_ident,
+                clear_inventory,
+                clear_active_estate,
+                furniture_scopes,
+            } => {
+                connection
+                    .invalidate_housing_estate_from_admin(
+                        land_ident,
+                        clear_inventory,
+                        clear_active_estate,
+                        furniture_scopes,
+                    )
+                    .await;
+            }
             FromServer::NewTasks(mut tasks) => connection.queued_tasks.append(&mut tasks),
             FromServer::NewStatusEffects(status_effects) => {
                 lua_player.status_effects = status_effects
@@ -4367,6 +4386,7 @@ async fn process_server_msg(
                         connection.old_zone_id,
                         connection.old_position,
                         connection.old_rotation,
+                        connection.old_housing_plot_location,
                     ))
                     .await;
             }

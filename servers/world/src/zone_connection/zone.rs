@@ -1,5 +1,6 @@
 //! All things zone related, such as changing the weather or warping.
 
+use super::{ActiveHousingEstate, ActiveHousingWardContext};
 use crate::{
     HousingPlotLocation, ObsfucationData, TeleportReason, ToServer, ZoneConnection,
     inventory::BuyBackList,
@@ -492,6 +493,7 @@ impl ZoneConnection {
         self.old_zone_id = self.player_data.volatile.zone_id as u16;
         self.old_position = self.player_data.volatile.position;
         self.old_rotation = self.player_data.volatile.rotation as f32;
+        self.old_housing_plot_location = self.old_housing_plot_location();
 
         self.handle
             .send(ToServer::JoinContent(
@@ -500,6 +502,15 @@ impl ZoneConnection {
                 id,
             ))
             .await;
+    }
+
+    fn old_housing_plot_location(&self) -> Option<HousingPlotLocation> {
+        old_housing_plot_location_from_parts(
+            self.old_zone_id,
+            self.active_housing_ward_context,
+            self.display_housing_ward_context,
+            self.active_housing_estate.as_ref(),
+        )
     }
 
     /// Ensure the player is placed in a valid zone, and if they aren't they are teleported back to their homepoint.
@@ -619,5 +630,121 @@ impl ZoneConnection {
             ],
         }))
         .await;
+    }
+}
+
+fn old_housing_plot_location_from_parts(
+    old_zone_id: u16,
+    active_context: Option<ActiveHousingWardContext>,
+    display_context: Option<ActiveHousingWardContext>,
+    active_estate: Option<&ActiveHousingEstate>,
+) -> Option<HousingPlotLocation> {
+    let context = display_context.or(active_context)?;
+    if context.territory_type_id != old_zone_id {
+        return None;
+    }
+
+    Some(HousingPlotLocation {
+        territory_type_id: context.territory_type_id,
+        ward_index: context.ward_index,
+        raw_plot_index: active_estate
+            .map(|estate| estate.house_id.unit.apartment_division_plot_index)
+            .unwrap_or_default(),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use kawari::common::{HouseId, HouseUnit};
+
+    fn house_id(raw_plot_index: u8) -> HouseId {
+        HouseId {
+            unit: HouseUnit {
+                apartment_division_plot_index: raw_plot_index,
+                apartment_flag: false,
+            },
+            ward_index: 2,
+            room_number: 0,
+            territory_type_id: 340,
+            world_id: 21,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn old_housing_plot_location_preserves_active_outdoor_ward_for_content_return() {
+        let active_context = ActiveHousingWardContext {
+            territory_type_id: 340,
+            ward_index: 2,
+            division: 1,
+        };
+        let active_estate = ActiveHousingEstate {
+            land_ident: 1005,
+            house_id: house_id(35),
+            indoors: false,
+        };
+
+        assert_eq!(
+            old_housing_plot_location_from_parts(
+                340,
+                Some(active_context),
+                None,
+                Some(&active_estate),
+            ),
+            Some(HousingPlotLocation {
+                territory_type_id: 340,
+                ward_index: 2,
+                raw_plot_index: 35,
+            })
+        );
+    }
+
+    #[test]
+    fn old_housing_plot_location_ignores_context_from_other_zone() {
+        assert_eq!(
+            old_housing_plot_location_from_parts(
+                341,
+                Some(ActiveHousingWardContext {
+                    territory_type_id: 340,
+                    ward_index: 2,
+                    division: 0,
+                }),
+                None,
+                None,
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn old_housing_plot_location_prefers_display_ward_over_active_authority() {
+        let active_estate = ActiveHousingEstate {
+            land_ident: 1005,
+            house_id: house_id(5),
+            indoors: false,
+        };
+
+        assert_eq!(
+            old_housing_plot_location_from_parts(
+                340,
+                Some(ActiveHousingWardContext {
+                    territory_type_id: 340,
+                    ward_index: 1,
+                    division: 0,
+                }),
+                Some(ActiveHousingWardContext {
+                    territory_type_id: 340,
+                    ward_index: 2,
+                    division: 1,
+                }),
+                Some(&active_estate),
+            ),
+            Some(HousingPlotLocation {
+                territory_type_id: 340,
+                ward_index: 2,
+                raw_plot_index: 5,
+            })
+        );
     }
 }

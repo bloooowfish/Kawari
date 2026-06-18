@@ -13,12 +13,14 @@ use physis::{
 };
 
 use crate::{
-    ClientId, FromServer, GameData, StatusEffects, TerritoryNameKind, ToServer,
+    ClientId, FromServer, GameData, HousingFurnitureObject, HousingPlotLocation, StatusEffects,
+    TerritoryNameKind, ToServer,
     lua::LuaZone,
     server::{
         NetworkedActor, WorldServer,
         housing_object::{
             remove_housing_furniture_object_networked,
+            remove_housing_furniture_objects_for_scope_networked,
             spawn_housing_furniture_object_for_current_clients,
             update_housing_furniture_object_position_networked, upsert_housing_furniture_object,
         },
@@ -898,6 +900,7 @@ fn begin_change_zone<'a>(
     network: &mut NetworkState,
     game_data: &mut GameData,
     destination_zone_id: Option<u16>,
+    housing_plot_location: Option<HousingPlotLocation>,
     actor_id: ObjectId,
     warp_type: WarpType,
     param4: u8,
@@ -929,14 +932,19 @@ fn begin_change_zone<'a>(
         // inform the players in this zone that this actor left
         if let Some(current_instance) = data.find_actor_instance_mut(actor_id) {
             // HACK: This is to prevent actors from disappearing when warping within the same zone.
-            if current_instance.zone.id != destination_zone_id {
+            if current_instance.zone.id != destination_zone_id
+                || housing_ward_index_for_instance_change(
+                    destination_zone_id,
+                    housing_plot_location,
+                ) != current_instance.housing_ward_index
+            {
                 network.remove_actor(current_instance, actor_id);
                 needs_init_zone = true;
             }
         }
 
         // then find or create a new instance with the zone id
-        let instance = data.ensure_exists(destination_zone_id, game_data);
+        let instance = data.ensure_exists(destination_zone_id, game_data, housing_plot_location);
         // Insert an empty actor that will be filled later
         instance.insert_empty_actor(actor_id);
 
@@ -967,6 +975,15 @@ fn begin_change_zone<'a>(
     }
 }
 
+fn housing_ward_index_for_instance_change(
+    destination_zone_id: u16,
+    housing_plot_location: Option<HousingPlotLocation>,
+) -> Option<u8> {
+    housing_plot_location
+        .filter(|location| location.territory_type_id == destination_zone_id)
+        .map(|location| location.ward_index)
+}
+
 /// Sends the needed information to ZoneConnection for a zone change.
 pub fn change_zone_warp_to_pop_range(
     data: &mut WorldServer,
@@ -986,6 +1003,7 @@ pub fn change_zone_warp_to_pop_range(
         network,
         game_data,
         destination_zone_id,
+        None,
         actor_id,
         warp_type,
         param4,
@@ -1064,12 +1082,21 @@ pub fn change_zone_to_player(
     to_actor_id: ObjectId,
 ) {
     let destination_zone_id;
+    let destination_housing_plot_location;
     {
         let Some(target_instance) = data.find_actor_instance(to_actor_id) else {
             return;
         };
 
         destination_zone_id = target_instance.zone.id;
+        destination_housing_plot_location =
+            target_instance
+                .housing_ward_index
+                .map(|ward_index| HousingPlotLocation {
+                    territory_type_id: destination_zone_id,
+                    ward_index,
+                    raw_plot_index: 0,
+                });
     }
 
     let from_actor_id = network.clients.get(&from_id).unwrap().0.actor_id;
@@ -1079,6 +1106,7 @@ pub fn change_zone_to_player(
         network,
         game_data,
         Some(destination_zone_id),
+        destination_housing_plot_location,
         from_actor_id,
         WarpType::Normal,
         0,
@@ -1237,6 +1265,7 @@ pub fn handle_zone_messages(
                 &mut network,
                 &mut game_data,
                 Some(*zone_id),
+                None,
                 *actor_id,
                 warp_type,
                 param4,
@@ -1285,6 +1314,7 @@ pub fn handle_zone_messages(
                 &mut network,
                 &mut game_data,
                 Some(plot_location.territory_type_id),
+                Some(*plot_location),
                 *actor_id,
                 warp_type,
                 param4,
@@ -1569,39 +1599,12 @@ pub fn handle_zone_messages(
                 object_count = objects.len(),
                 "Syncing persisted housing furniture object overlays"
             );
-            let mut upserted_count = 0usize;
-            let mut spawn_message_count = 0usize;
-            for object in objects {
-                let striking_dummy_data = (!object.indoors)
-                    .then(|| game_data.get_housing_striking_dummy_npc_data(object.catalog_id))
-                    .flatten();
-                let interactable = striking_dummy_data.is_some()
-                    || game_data
-                        .is_housing_furniture_interactable(object.catalog_id, object.indoors);
-                tracing::debug!(
-                    from_actor_id = from_actor_id.0,
-                    slot = object.slot,
-                    catalog_id = object.catalog_id,
-                    indoors = object.indoors,
-                    plot_index = object.plot_index,
-                    interactable,
-                    striking_dummy = striking_dummy_data.is_some(),
-                    "Evaluated housing furniture object overlay"
-                );
-                if let Some(housing_actor_id) = upsert_housing_furniture_object(
-                    instance,
-                    *object,
-                    interactable,
-                    striking_dummy_data.as_ref(),
-                ) {
-                    upserted_count += 1;
-                    spawn_message_count += spawn_housing_furniture_object_for_current_clients(
-                        instance,
-                        &mut network,
-                        housing_actor_id,
-                    );
-                }
-            }
+            let (upserted_count, spawn_message_count) = sync_housing_furniture_object_overlays(
+                instance,
+                &mut game_data,
+                &mut network,
+                objects,
+            );
             tracing::warn!(
                 from_actor_id = from_actor_id.0,
                 object_count = objects.len(),
@@ -1609,6 +1612,46 @@ pub fn handle_zone_messages(
                 spawn_message_count,
                 client_count = network.clients.len(),
                 "Finished persisted housing furniture object overlay sync"
+            );
+
+            true
+        }
+        ToServer::ReplaceHousingFurnitureObjects(from_actor_id, scope, objects) => {
+            let mut data = data.lock();
+            let mut game_data = game_data.lock();
+            let mut network = network.lock();
+
+            let Some(instance) = data.find_actor_instance_mut(*from_actor_id) else {
+                tracing::warn!(
+                    from_actor_id = from_actor_id.0,
+                    object_count = objects.len(),
+                    ?scope,
+                    "Skipping housing furniture object overlay replacement because actor instance was not found"
+                );
+                return true;
+            };
+
+            let removed_count = remove_housing_furniture_objects_for_scope_networked(
+                instance,
+                &mut network,
+                *scope,
+            );
+            let (upserted_count, spawn_message_count) = sync_housing_furniture_object_overlays(
+                instance,
+                &mut game_data,
+                &mut network,
+                objects,
+            );
+
+            tracing::warn!(
+                from_actor_id = from_actor_id.0,
+                ?scope,
+                object_count = objects.len(),
+                removed_count,
+                upserted_count,
+                spawn_message_count,
+                client_count = network.clients.len(),
+                "Replaced housing furniture object overlays after admin mutation"
             );
 
             true
@@ -1723,6 +1766,48 @@ pub fn handle_zone_messages(
     }
 }
 
+fn sync_housing_furniture_object_overlays(
+    instance: &mut Instance,
+    game_data: &mut GameData,
+    network: &mut NetworkState,
+    objects: &[HousingFurnitureObject],
+) -> (usize, usize) {
+    let mut upserted_count = 0usize;
+    let mut spawn_message_count = 0usize;
+
+    for object in objects {
+        let striking_dummy_data = (!object.indoors)
+            .then(|| game_data.get_housing_striking_dummy_npc_data(object.catalog_id))
+            .flatten();
+        let interactable = striking_dummy_data.is_some()
+            || game_data.is_housing_furniture_interactable(object.catalog_id, object.indoors);
+        tracing::debug!(
+            slot = object.slot,
+            catalog_id = object.catalog_id,
+            indoors = object.indoors,
+            plot_index = object.plot_index,
+            interactable,
+            striking_dummy = striking_dummy_data.is_some(),
+            "Evaluated housing furniture object overlay"
+        );
+        if let Some(housing_actor_id) = upsert_housing_furniture_object(
+            instance,
+            *object,
+            interactable,
+            striking_dummy_data.as_ref(),
+        ) {
+            upserted_count += 1;
+            spawn_message_count += spawn_housing_furniture_object_for_current_clients(
+                instance,
+                network,
+                housing_actor_id,
+            );
+        }
+    }
+
+    (upserted_count, spawn_message_count)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1807,5 +1892,31 @@ mod tests {
 
         assert_eq!(position, fallback_position);
         assert_eq!(rotation, fallback_rotation);
+    }
+
+    #[test]
+    fn housing_ward_index_for_instance_change_uses_matching_destination_zone() {
+        assert_eq!(
+            housing_ward_index_for_instance_change(
+                340,
+                Some(HousingPlotLocation {
+                    territory_type_id: 340,
+                    ward_index: 2,
+                    raw_plot_index: 35,
+                }),
+            ),
+            Some(2)
+        );
+        assert_eq!(
+            housing_ward_index_for_instance_change(
+                341,
+                Some(HousingPlotLocation {
+                    territory_type_id: 340,
+                    ward_index: 2,
+                    raw_plot_index: 35,
+                }),
+            ),
+            None
+        );
     }
 }

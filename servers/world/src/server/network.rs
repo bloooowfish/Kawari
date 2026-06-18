@@ -242,6 +242,24 @@ impl NetworkState {
         }
     }
 
+    pub fn send_to_all(&mut self, message: FromServer, destination: DestinationNetwork) {
+        let clients = match destination {
+            DestinationNetwork::ZoneClients => &mut self.clients,
+            DestinationNetwork::ChatClients => &mut self.chat_clients,
+        };
+
+        for (id, (handle, _)) in clients {
+            let id = *id;
+            if handle.send(message.clone()).is_err() {
+                if destination == DestinationNetwork::ZoneClients {
+                    self.to_remove.push(id);
+                } else {
+                    self.to_remove_chat.push(id);
+                }
+            }
+        }
+    }
+
     /// Sends the `message` to `actor_id`.
     pub fn send_to_by_actor_id(
         &mut self,
@@ -430,5 +448,77 @@ impl NetworkState {
             .filter(|x| x.1.0.actor_id == actor_id)
             .last()
             .map(|x| *x.0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tokio::sync::mpsc;
+
+    use super::*;
+
+    fn client(
+        id: ClientId,
+        actor_id: u32,
+    ) -> (ClientHandle, ClientState, mpsc::Receiver<FromServer>) {
+        let (send, recv) = mpsc::channel(4);
+        (
+            ClientHandle {
+                id,
+                channel: send,
+                actor_id: ObjectId(actor_id),
+                content_id: 1000,
+                account_id: 2000,
+            },
+            ClientState::default(),
+            recv,
+        )
+    }
+
+    #[test]
+    fn send_to_all_delivers_housing_invalidation_to_zone_clients() {
+        let mut network = NetworkState::default();
+        let (send, _recv) = mpsc::channel(1);
+        let id_source = crate::ServerHandle {
+            chan: send,
+            next_id: Default::default(),
+        };
+        let first_id = id_source.next_id();
+        let second_id = id_source.next_id();
+        let (first_handle, first_state, mut first_recv) = client(first_id, 11);
+        let (second_handle, second_state, mut second_recv) = client(second_id, 12);
+        network
+            .clients
+            .insert(first_handle.id, (first_handle, first_state));
+        network
+            .clients
+            .insert(second_handle.id, (second_handle, second_state));
+
+        network.send_to_all(
+            FromServer::HousingEstateInvalidated {
+                land_ident: 42,
+                clear_inventory: true,
+                clear_active_estate: true,
+                furniture_scopes: Vec::new(),
+            },
+            DestinationNetwork::ZoneClients,
+        );
+
+        for recv in [&mut first_recv, &mut second_recv] {
+            match recv.try_recv().expect("zone client should receive message") {
+                FromServer::HousingEstateInvalidated {
+                    land_ident,
+                    clear_inventory,
+                    clear_active_estate,
+                    furniture_scopes,
+                } => {
+                    assert_eq!(land_ident, 42);
+                    assert!(clear_inventory);
+                    assert!(clear_active_estate);
+                    assert!(furniture_scopes.is_empty());
+                }
+                other => panic!("unexpected message: {other:?}"),
+            }
+        }
     }
 }

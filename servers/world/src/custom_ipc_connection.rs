@@ -1,4 +1,11 @@
-use crate::{CharaMake, GameData, RemakeMode, WorldDatabase, housing::admin, inventory::Inventory};
+use crate::{
+    CharaMake, GameData, RemakeMode, ServerHandle, ToServer, WorldDatabase,
+    housing::admin,
+    housing::scope::{
+        housing_furniture_object_scopes_for_estate, merge_housing_furniture_object_scopes,
+    },
+    inventory::Inventory,
+};
 use kawari::{
     common::determine_initial_starting_zone,
     config::get_config,
@@ -19,10 +26,10 @@ use parking_lot::Mutex;
 use tokio::net::TcpStream;
 
 /// Represents a single connection between an instance of the world server and the lobby server.
-// TODO: Implement the ToServer protocol for CustomIpcConnection so we can notify the global server about some things that happen outside of the world server (e.g., deleted characters need to tell the global state that they're not in those linkshells anymore so online players can be told, and so that a new leader can be promoted if needed)
 pub struct CustomIpcConnection {
     pub socket: TcpStream,
     pub state: ConnectionState,
+    pub handle: ServerHandle,
     pub database: Arc<Mutex<WorldDatabase>>,
     pub gamedata: Arc<Mutex<GameData>>,
 }
@@ -118,6 +125,23 @@ impl CustomIpcConnection {
             &[segment],
         )
         .await;
+    }
+
+    async fn notify_housing_estate_invalidated(
+        &mut self,
+        land_ident: i64,
+        clear_inventory: bool,
+        clear_active_estate: bool,
+        furniture_scopes: Vec<crate::HousingFurnitureObjectScope>,
+    ) {
+        self.handle
+            .send(ToServer::HousingEstateInvalidated {
+                land_ident,
+                clear_inventory,
+                clear_active_estate,
+                furniture_scopes,
+            })
+            .await;
     }
 
     pub async fn handle_custom_ipc(&mut self, data: &CustomIpcSegment) {
@@ -348,8 +372,8 @@ impl CustomIpcConnection {
             CustomIpcData::RequestHousingSummary {} => {
                 let json = {
                     let mut database = self.database.lock();
-                    let rows = database.housing_summary_rows_for_admin();
-                    admin::summary_json(&rows)
+                    let rows = database.housing_estate_summary_query_rows();
+                    admin::summary_ipc_json(&rows)
                 };
 
                 self.send_custom_response(PacketSegment {
@@ -365,7 +389,8 @@ impl CustomIpcConnection {
                 let json = {
                     let mut database = self.database.lock();
                     let detail_json = database
-                        .housing_estate_detail_for_admin(*land_ident)
+                        .housing_estate_detail_query(*land_ident)
+                        .map(admin::detail_from_query)
                         .map(|detail| admin::detail_ipc_json(&detail))
                         .transpose();
                     housing_detail_json_for_admin_result(*land_ident, detail_json)
@@ -381,18 +406,31 @@ impl CustomIpcConnection {
                 .await;
             }
             CustomIpcData::ResetHousingFurniture { land_ident } => {
-                let message = {
+                let (message, furniture_scopes) = {
                     let mut database = self.database.lock();
-                    if database
-                        .housing_estate_detail_for_admin(*land_ident)
-                        .is_none()
-                    {
-                        format!("Housing estate {} was not found.", land_ident)
-                    } else {
+                    if let Some(detail) = database.housing_estate_detail_query(*land_ident) {
+                        let scopes = housing_furniture_object_scopes_for_estate(&detail.estate);
                         let deleted = database.delete_housing_furniture_for_estate(*land_ident);
-                        format!("Deleted {deleted} furniture rows for estate {land_ident}.")
+                        (
+                            format!("Deleted {deleted} furniture rows for estate {land_ident}."),
+                            scopes,
+                        )
+                    } else {
+                        (
+                            format!("Housing estate {} was not found.", land_ident),
+                            Vec::new(),
+                        )
                     }
                 };
+                if !furniture_scopes.is_empty() {
+                    self.notify_housing_estate_invalidated(
+                        *land_ident,
+                        true,
+                        false,
+                        furniture_scopes,
+                    )
+                    .await;
+                }
 
                 self.send_custom_response(PacketSegment {
                     segment_type: SegmentType::KawariIpc,
@@ -404,14 +442,31 @@ impl CustomIpcConnection {
                 .await;
             }
             CustomIpcData::ResetHousingEstate { land_ident } => {
-                let message = {
+                let (message, furniture_scopes) = {
                     let mut database = self.database.lock();
-                    if database.delete_housing_estate_and_furniture(*land_ident) {
-                        format!("Deleted estate {land_ident} and its furniture rows.")
+                    if let Some(detail) = database.housing_estate_detail_query(*land_ident) {
+                        let scopes = housing_furniture_object_scopes_for_estate(&detail.estate);
+                        database.delete_housing_estate_and_furniture(*land_ident);
+                        (
+                            format!("Deleted estate {land_ident} and its furniture rows."),
+                            scopes,
+                        )
                     } else {
-                        format!("Housing estate {} was not found.", land_ident)
+                        (
+                            format!("Housing estate {} was not found.", land_ident),
+                            Vec::new(),
+                        )
                     }
                 };
+                if !furniture_scopes.is_empty() {
+                    self.notify_housing_estate_invalidated(
+                        *land_ident,
+                        true,
+                        true,
+                        furniture_scopes,
+                    )
+                    .await;
+                }
 
                 self.send_custom_response(PacketSegment {
                     segment_type: SegmentType::KawariIpc,
@@ -427,17 +482,24 @@ impl CustomIpcConnection {
                 name,
                 greeting,
             } => {
-                let message = {
+                let (message, invalidated) = {
                     let mut database = self.database.lock();
                     let updated_name = database.update_housing_name(*land_ident, name);
                     let updated_greeting = database.update_housing_greeting(*land_ident, greeting);
 
                     if updated_name || updated_greeting {
-                        format!("Updated estate text for {land_ident}.")
+                        (format!("Updated estate text for {land_ident}."), true)
                     } else {
-                        format!("Housing estate {} was not found.", land_ident)
+                        (
+                            format!("Housing estate {} was not found.", land_ident),
+                            false,
+                        )
                     }
                 };
+                if invalidated {
+                    self.notify_housing_estate_invalidated(*land_ident, false, false, Vec::new())
+                        .await;
+                }
 
                 self.send_custom_response(PacketSegment {
                     segment_type: SegmentType::KawariIpc,
@@ -493,14 +555,32 @@ impl CustomIpcConnection {
                 .await;
             }
             CustomIpcData::ImportHousingEstate { path } => {
+                let mut invalidation = None;
                 let message = match validate_housing_import_path_for_ipc(path) {
                     Ok(path) => {
                         let import_path = PathBuf::from(&path);
                         match fs::read_to_string(&import_path) {
-                            Ok(contents) => match serde_json::from_str(&contents) {
+                            Ok(contents) => match serde_json::from_str::<
+                                crate::database::HousingEstateExport,
+                            >(&contents)
+                            {
                                 Ok(export) => {
+                                    let land_ident = export.estate.land_ident;
+                                    let mut scopes =
+                                        housing_furniture_object_scopes_for_estate(&export.estate);
                                     let mut database = self.database.lock();
+                                    if let Some(existing) =
+                                        database.housing_estate_detail_query(land_ident)
+                                    {
+                                        scopes.extend(housing_furniture_object_scopes_for_estate(
+                                            &existing.estate,
+                                        ));
+                                    }
                                     if database.import_housing_estate(export) {
+                                        invalidation = Some((
+                                            land_ident,
+                                            merge_housing_furniture_object_scopes(scopes),
+                                        ));
                                         format!("Imported housing estate from {path}.")
                                     } else {
                                         format!("Failed to import housing estate from {path}.")
@@ -517,6 +597,15 @@ impl CustomIpcConnection {
                     }
                     Err(message) => message,
                 };
+                if let Some((land_ident, furniture_scopes)) = invalidation {
+                    self.notify_housing_estate_invalidated(
+                        land_ident,
+                        true,
+                        true,
+                        furniture_scopes,
+                    )
+                    .await;
+                }
 
                 self.send_custom_response(PacketSegment {
                     segment_type: SegmentType::KawariIpc,

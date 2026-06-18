@@ -29,14 +29,15 @@ impl ZoneConnection {
                     estate,
                     &furniture_rows,
                 ));
-                let plot_index = HouseId::from_u64(estate.house_id as u64)
-                    .unit
-                    .apartment_division_plot_index;
-                furniture_objects.extend(
-                    furniture_rows.iter().filter_map(|row| {
-                        housing_furniture_object_from_row(row, false, plot_index)
-                    }),
-                );
+                let scope = housing_furniture_object_scope_for_estate(estate, false);
+                furniture_objects.extend(furniture_rows.iter().filter_map(|row| {
+                    housing_furniture_object_from_row(
+                        row,
+                        false,
+                        scope.ward_index,
+                        scope.plot_index,
+                    )
+                }));
             }
 
             (main_estates, furniture_lists, furniture_objects)
@@ -379,6 +380,7 @@ impl ZoneConnection {
                 &database.list_all_housing_furniture(active_estate.land_ident),
                 true,
                 0,
+                0,
             )
         };
 
@@ -513,6 +515,7 @@ pub(super) fn build_outdoor_estate_furniture_lists(
 pub(super) fn housing_furniture_object_from_row(
     row: &HousingFurniture,
     indoors: bool,
+    ward_index: u8,
     plot_index: u8,
 ) -> Option<HousingFurnitureObject> {
     if !row.placed {
@@ -532,6 +535,7 @@ pub(super) fn housing_furniture_object_from_row(
         position: Position(Vec3::new(row.pos_x, row.pos_y, row.pos_z)),
         rotation: row.rotation,
         indoors,
+        ward_index,
         plot_index,
     })
 }
@@ -539,10 +543,11 @@ pub(super) fn housing_furniture_object_from_row(
 pub(super) fn housing_furniture_objects_from_rows(
     rows: &[HousingFurniture],
     indoors: bool,
+    ward_index: u8,
     plot_index: u8,
 ) -> Vec<HousingFurnitureObject> {
     rows.iter()
-        .filter_map(|row| housing_furniture_object_from_row(row, indoors, plot_index))
+        .filter_map(|row| housing_furniture_object_from_row(row, indoors, ward_index, plot_index))
         .collect()
 }
 

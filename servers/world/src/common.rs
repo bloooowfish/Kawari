@@ -42,6 +42,7 @@ pub struct ClientId(usize);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HousingPlotLocation {
     pub territory_type_id: u16,
+    pub ward_index: u8,
     pub raw_plot_index: u8,
 }
 
@@ -88,12 +89,24 @@ pub struct HousingFurnitureObject {
     pub position: Position,
     pub rotation: f32,
     pub indoors: bool,
+    pub ward_index: u8,
     pub plot_index: u8,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub struct HousingFurnitureObjectKey {
     pub slot: u16,
+    pub indoors: bool,
+    pub ward_index: u8,
+    pub plot_index: u8,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct HousingFurnitureObjectScope {
+    pub territory_type_id: u16,
+    pub world_id: u16,
+    pub ward_index: u8,
+    pub division: u8,
     pub indoors: bool,
     pub plot_index: u8,
 }
@@ -103,6 +116,7 @@ impl From<&HousingFurnitureObject> for HousingFurnitureObjectKey {
         Self {
             slot: value.slot,
             indoors: value.indoors,
+            ward_index: value.ward_index,
             plot_index: value.plot_index,
         }
     }
@@ -279,6 +293,13 @@ pub enum FromServer {
     FurniturePlaced(ContainerType, u16, u16, u8, Position, bool, f32, u8),
     /// Inform the client that another player has moved or rotated a piece of furniture.
     FurnitureTranslated((bool, u8), u16, Position, f32, bool),
+    /// Inform zone clients that an admin-side housing mutation may invalidate local cached housing state.
+    HousingEstateInvalidated {
+        land_ident: i64,
+        clear_inventory: bool,
+        clear_active_estate: bool,
+        furniture_scopes: Vec<HousingFurnitureObjectScope>,
+    },
     /// Inform the client that another player in their party has offered them a teleport.
     TeleportOffered(u32, TeleportQuery),
 }
@@ -440,7 +461,14 @@ pub enum ToServer {
     /// The client is requesting to join the following content.
     JoinContent(ClientId, ObjectId, u16),
     /// The c lient is requesting to leave their current content, the connection is in charge of keeping track of the old position.
-    LeaveContent(ClientId, ObjectId, u16, Position, f32),
+    LeaveContent(
+        ClientId,
+        ObjectId,
+        u16,
+        Position,
+        f32,
+        Option<HousingPlotLocation>,
+    ),
     /// Update the global server state of the client's conditions.
     UpdateConditions(ObjectId, Conditions),
     /// (Temporary) Signal to the server to commence the duty.
@@ -519,12 +547,25 @@ pub enum ToServer {
     SpawnLayoutNpc(ObjectId, u32),
     /// Syncs persisted housing furniture overlay objects into the current instance.
     SyncHousingFurnitureObjects(ObjectId, Vec<HousingFurnitureObject>),
+    /// Replaces existing housing furniture overlay objects for the current estate scope.
+    ReplaceHousingFurnitureObjects(
+        ObjectId,
+        HousingFurnitureObjectScope,
+        Vec<HousingFurnitureObject>,
+    ),
     /// The client places a piece of furniture.
     PlaceFurniture(ObjectId, HousingFurnitureObject, ContainerType, u16, u8),
     /// The client moves or rotates a piece of furniture.
     TranslateFurniture(ObjectId, HousingFurnitureObjectKey, Position, f32),
     /// The client removes a placed furniture object from the world.
     RemoveHousingFurnitureObject(ObjectId, HousingFurnitureObjectKey),
+    /// Admin IPC mutated a persisted housing estate, so online zone clients should drop matching cached housing state.
+    HousingEstateInvalidated {
+        land_ident: i64,
+        clear_inventory: bool,
+        clear_active_estate: bool,
+        furniture_scopes: Vec<HousingFurnitureObjectScope>,
+    },
     /// The client offers a teleport to nearby party members.
     OfferTeleportToParty(Option<u64>, ObjectId, u16, TeleportQuery),
     /// A Variant Dungeon route was chosen.

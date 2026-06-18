@@ -8,6 +8,7 @@ pub struct PersistedFurniturePlacement {
     pub position: Position,
     pub indoors: bool,
     pub rotation: f32,
+    pub ward_index: u8,
     pub plot_index: u8,
     pub object_slot: u16,
     pub spawned: bool,
@@ -929,6 +930,11 @@ impl ZoneConnection {
             position,
             indoors: intended_use == TerritoryIntendedUse::HousingIndoor,
             rotation,
+            ward_index: if intended_use == TerritoryIntendedUse::HousingIndoor {
+                0
+            } else {
+                active_estate.house_id.ward_index
+            },
             plot_index,
             object_slot,
             spawned: spawn_furniture,
@@ -992,6 +998,7 @@ impl ZoneConnection {
                 container_slot,
                 "Furniture translation did not match a persisted furniture row"
             );
+            return None;
         }
 
         Some(PersistedFurnitureTranslation {
@@ -1005,6 +1012,7 @@ impl ZoneConnection {
             object_key: HousingFurnitureObjectKey {
                 slot: flat_slot,
                 indoors,
+                ward_index: if indoors { 0 } else { house_id.ward_index },
                 plot_index: house_id.unit.apartment_division_plot_index,
             },
         })
@@ -1051,6 +1059,11 @@ impl ZoneConnection {
             flat_slot_for_container(storage_id, slot).map(|flat_slot| HousingFurnitureObjectKey {
                 slot: flat_slot,
                 indoors: intended_use == TerritoryIntendedUse::HousingIndoor,
+                ward_index: if intended_use == TerritoryIntendedUse::HousingIndoor {
+                    0
+                } else {
+                    active_estate.house_id.ward_index
+                },
                 plot_index: active_estate.house_id.unit.apartment_division_plot_index,
             })
         } else {

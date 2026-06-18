@@ -168,6 +168,7 @@ fn housing_outdoor_exit_plot_location(estate: &HousingEstate) -> Option<HousingP
     let location = outdoor_housing_location_from_estate(estate)?;
     Some(HousingPlotLocation {
         territory_type_id: location.territory_type_id,
+        ward_index: location.ward_index,
         raw_plot_index: location.raw_plot_index,
     })
 }
@@ -298,6 +299,7 @@ mod tests {
             location.plot_location,
             Some(HousingPlotLocation {
                 territory_type_id: 340,
+                ward_index: 2,
                 raw_plot_index: 5,
             })
         );
@@ -318,6 +320,7 @@ mod tests {
             location.plot_location,
             Some(HousingPlotLocation {
                 territory_type_id: 340,
+                ward_index: 2,
                 raw_plot_index: 35,
             })
         );

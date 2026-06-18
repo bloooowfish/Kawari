@@ -105,6 +105,7 @@ pub struct Instance {
     pub actors: HashMap<ObjectId, NetworkedActor>,
     pub navmesh: Navmesh,
     pub zone: Zone,
+    pub housing_ward_index: Option<u8>,
     pub weather_id: u16,
     pub content_finder_condition_id: u16,
     /// If Some, then this is the path of the navmesh we need to generate.
