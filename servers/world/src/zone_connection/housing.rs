@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use super::{
     ActiveHousingEstate, ActiveHousingWardContext, AppliedHousingAppearanceItemOperation,
     PendingHousingAppearanceItemOperation, ZoneConnection,
+    housing_item_operation::housing_item_operation_hint,
 };
 use crate::common::{HousingFurnitureObject, HousingFurnitureObjectKey};
 use crate::gamedata::GameData;
@@ -1446,7 +1447,7 @@ impl ZoneConnection {
         action: &HousingItemOperation,
         intended_use: TerritoryIntendedUse,
     ) -> bool {
-        let Some(source_container) = action.source_container() else {
+        let Some(operation_hint) = housing_item_operation_hint(action) else {
             tracing::warn!(
                 content_id = self.player_data.character.content_id,
                 raw = ?action.raw,
@@ -1454,14 +1455,8 @@ impl ZoneConnection {
             );
             return true;
         };
-        let Some(source_slot) = action.source_slot() else {
-            tracing::warn!(
-                content_id = self.player_data.character.content_id,
-                raw = ?action.raw,
-                "Ignoring housing appearance item operation without a usable source slot hint"
-            );
-            return true;
-        };
+        let source_container = operation_hint.source_container;
+        let source_slot = operation_hint.source_slot;
 
         if !self.in_housing_area(intended_use) || !self.can_edit_active_housing_estate(intended_use)
         {
@@ -1508,7 +1503,7 @@ impl ZoneConnection {
             return true;
         };
 
-        let marker_target_slot = action.target_appearance_slot();
+        let marker_target_slot = Some(operation_hint.target_appearance_slot);
         let Some((target_container, target_slot)) =
             self.housing_appearance_target(item_ui_category, intended_use, marker_target_slot)
         else {

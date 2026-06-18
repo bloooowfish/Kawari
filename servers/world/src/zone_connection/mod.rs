@@ -44,6 +44,7 @@ mod effect;
 mod event;
 mod friends;
 mod housing;
+mod housing_item_operation;
 mod item;
 mod linkshell;
 mod lua;
