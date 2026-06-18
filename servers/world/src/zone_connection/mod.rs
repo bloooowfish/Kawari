@@ -1,5 +1,4 @@
 use std::{
-    path::PathBuf,
     sync::Arc,
     time::{Instant, SystemTime},
 };
@@ -14,10 +13,10 @@ use crate::{
         AetherCurrent, Aetheryte, Character, ClassJob, Companion, Friends, GrandCompany, Mentor,
         Quest, SearchInfo, Volatile,
     },
-    lua::{HousingPresetScope, KawariLua, LuaTask},
+    lua::{KawariLua, LuaTask},
 };
 use kawari::{
-    common::{ContainerType, HandlerId, HouseId, ObjectId, Position, timestamp_secs},
+    common::{HandlerId, ObjectId, Position, timestamp_secs},
     config::WorldConfig,
     ipc::zone::{
         CWLSMemberListEntry, ClientTriggerCommand, ClientZoneIpcSegment, Condition, Conditions,
@@ -35,7 +34,7 @@ use kawari::{
 use super::{
     WorldDatabase,
     common::{ClientId, HousingPlotLocation, PlayerSpawnLocation, ServerHandle, ToServer},
-    inventory::{BuyBackList, HousingInventory, Inventory, Item},
+    inventory::{BuyBackList, HousingInventory, Inventory},
 };
 
 mod actor;
@@ -44,6 +43,10 @@ mod effect;
 mod event;
 mod friends;
 mod housing;
+pub use housing::{
+    ActiveHousingEstate, ActiveHousingWardContext, LastHousingPreset,
+    PendingHousingAppearanceItemOperation,
+};
 mod housing_item_operation;
 mod item;
 mod linkshell;
@@ -120,44 +123,6 @@ pub struct ObsfucationData {
     pub seed1: u8,
     pub seed2: u8,
     pub seed3: u32,
-}
-
-#[derive(Debug, Default, Clone)]
-pub struct ActiveHousingEstate {
-    pub land_ident: i64,
-    pub house_id: HouseId,
-    pub indoors: bool,
-}
-
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct ActiveHousingWardContext {
-    pub territory_type_id: u16,
-    pub ward_index: u8,
-    pub division: u8,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct PendingHousingAppearanceItemOperation {
-    pub source_container: ContainerType,
-    pub source_slot: u16,
-    pub target_container: ContainerType,
-    pub target_slot: u16,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct AppliedHousingAppearanceItemOperation {
-    pub source_container: ContainerType,
-    pub source_slot: u16,
-    pub target_container: ContainerType,
-    pub target_slot: u16,
-    pub original_source_item: Item,
-    pub original_target_item: Item,
-}
-
-#[derive(Clone, Debug)]
-pub struct LastHousingPreset {
-    pub path: PathBuf,
-    pub scope: HousingPresetScope,
 }
 
 /// Represents a single connection between an instance of the client and the zone portion of the world server.

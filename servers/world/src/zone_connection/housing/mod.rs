@@ -1,11 +1,16 @@
+mod state;
+
 use glam::Vec3;
 use physis::TerritoryIntendedUse;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
-use super::{
+pub use state::{
     ActiveHousingEstate, ActiveHousingWardContext, AppliedHousingAppearanceItemOperation,
-    PendingHousingAppearanceItemOperation, ZoneConnection,
-    housing_item_operation::housing_item_operation_hint,
+    LastHousingPreset, PendingHousingAppearanceItemOperation,
+};
+
+use super::{
+    ZoneConnection, housing_item_operation::housing_item_operation_hint,
 };
 use crate::common::{HousingFurnitureObject, HousingFurnitureObjectKey};
 use crate::gamedata::GameData;
