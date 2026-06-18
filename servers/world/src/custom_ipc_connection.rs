@@ -1,4 +1,4 @@
-use crate::{CharaMake, GameData, RemakeMode, WorldDatabase, inventory::Inventory};
+use crate::{CharaMake, GameData, RemakeMode, WorldDatabase, housing::admin, inventory::Inventory};
 use kawari::{
     common::determine_initial_starting_zone,
     config::get_config,
@@ -348,7 +348,8 @@ impl CustomIpcConnection {
             CustomIpcData::RequestHousingSummary {} => {
                 let json = {
                     let mut database = self.database.lock();
-                    database.housing_summary_json_for_admin()
+                    let rows = database.housing_summary_rows_for_admin();
+                    admin::summary_json(&rows)
                 };
 
                 self.send_custom_response(PacketSegment {
@@ -363,10 +364,11 @@ impl CustomIpcConnection {
             CustomIpcData::RequestHousingEstateDetail { land_ident } => {
                 let json = {
                     let mut database = self.database.lock();
-                    housing_detail_json_for_admin_result(
-                        *land_ident,
-                        database.housing_estate_detail_ipc_json_for_admin(*land_ident),
-                    )
+                    let detail_json = database
+                        .housing_estate_detail_for_admin(*land_ident)
+                        .map(|detail| admin::detail_ipc_json(&detail))
+                        .transpose();
+                    housing_detail_json_for_admin_result(*land_ident, detail_json)
                 };
 
                 self.send_custom_response(PacketSegment {

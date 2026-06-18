@@ -1,13 +1,16 @@
 use diesel::{SqliteConnection, prelude::*};
 use kawari::{
     common::{ContainerType, HouseId, HouseUnit, Position},
-    ipc::kawari::clamp_housing_detail_json_for_ipc,
     ipc::zone::PlotSize,
 };
 use serde::{Deserialize, Serialize};
 
 use crate::{
     housing::{
+        admin::{
+            HousingAdminEstateSummaryRow, HousingAdminFurnitureRow, HousingEstateAdminDetail,
+            HousingFurnitureCounts,
+        },
         apartment::valid_apartment_room_number,
         constants::{
             DEFAULT_LOCAL_HOUSING_DIVISION, DEFAULT_LOCAL_HOUSING_LAND_FLAGS,
@@ -30,55 +33,6 @@ use super::{
 const HOUSING_ESTATE_NAME_MAX_PAYLOAD_BYTES: usize = 20;
 const HOUSING_GREETING_MAX_PAYLOAD_BYTES: usize = 192;
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct HousingFurnitureCounts {
-    pub indoor_placed: usize,
-    pub indoor_storeroom: usize,
-    pub outdoor_placed: usize,
-    pub outdoor_storeroom: usize,
-    pub total: usize,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HousingAdminEstateSummaryRow {
-    pub land_ident: i64,
-    pub house_id: i64,
-    pub owner_content_id: Option<i64>,
-    pub owner_name: String,
-    pub plot: String,
-    pub kind: String,
-    pub size: String,
-    pub flags: i32,
-    pub furniture_counts: HousingFurnitureCounts,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HousingAdminFurnitureRow {
-    pub land_ident: i64,
-    pub container_type: i32,
-    pub container_kind: String,
-    pub slot: i32,
-    pub item_id: i64,
-    pub catalog_id: i32,
-    pub stain: i32,
-    pub placed: bool,
-    pub pos_x: f32,
-    pub pos_y: f32,
-    pub pos_z: f32,
-    pub rotation: f32,
-    pub created_by_content_id: Option<i64>,
-    pub updated_at: i64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HousingEstateAdminDetail {
-    pub estate: HousingEstate,
-    pub furniture_counts: HousingFurnitureCounts,
-    pub furniture: Vec<HousingAdminFurnitureRow>,
-}
-
-const HOUSING_DETAIL_EXPORT_GUIDANCE: &str = "Housing detail exceeded the admin IPC payload limit. Use Export JSON for the full estate payload.";
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HousingEstateExport {
     pub estate: HousingEstate,
@@ -96,27 +50,6 @@ pub struct HousingEstateSpec {
     pub plot_index: u8,
     pub plot_size: PlotSize,
     pub free_company: bool,
-}
-
-fn serialize_housing_estate_detail_ipc_json(
-    detail: &HousingEstateAdminDetail,
-) -> Result<String, serde_json::Error> {
-    let full_json = serde_json::to_string(detail)?;
-
-    if clamp_housing_detail_json_for_ipc(&full_json) == full_json {
-        return Ok(full_json);
-    }
-
-    serde_json::to_string(&serde_json::json!({
-        "error": "housing_detail_ipc_overflow",
-        "truncated": true,
-        "estate": detail.estate,
-        "land_ident": detail.estate.land_ident,
-        "house_id": detail.estate.house_id,
-        "furniture_counts": detail.furniture_counts,
-        "furniture_omitted": detail.furniture.len(),
-        "message": HOUSING_DETAIL_EXPORT_GUIDANCE,
-    }))
 }
 
 impl WorldDatabase {
@@ -665,11 +598,6 @@ impl WorldDatabase {
             .collect()
     }
 
-    pub fn housing_summary_json_for_admin(&mut self) -> String {
-        serde_json::to_string(&self.housing_summary_rows_for_admin())
-            .unwrap_or_else(|_| "[]".to_string())
-    }
-
     pub fn housing_estate_detail_for_admin(
         &mut self,
         land_ident: i64,
@@ -706,21 +634,6 @@ impl WorldDatabase {
             furniture_counts,
             furniture,
         })
-    }
-
-    pub fn housing_estate_detail_json_for_admin(&mut self, land_ident: i64) -> Option<String> {
-        let detail = self.housing_estate_detail_for_admin(land_ident)?;
-        serde_json::to_string(&detail).ok()
-    }
-
-    pub fn housing_estate_detail_ipc_json_for_admin(
-        &mut self,
-        land_ident: i64,
-    ) -> Result<Option<String>, serde_json::Error> {
-        let Some(detail) = self.housing_estate_detail_for_admin(land_ident) else {
-            return Ok(None);
-        };
-        serialize_housing_estate_detail_ipc_json(&detail).map(Some)
     }
 
     pub fn export_housing_estate(&mut self, land_ident: i64) -> Option<HousingEstateExport> {
@@ -1136,28 +1049,12 @@ fn local_apartment_house_id(
 
 #[cfg(test)]
 mod tests {
-    use std::io::Cursor;
-
-    use binrw::BinWrite;
     use glam::Vec3;
-    use kawari::ipc::kawari::{
-        CustomIpcData, CustomIpcSegment, HOUSING_ADMIN_DETAIL_JSON_MAX_BYTES,
-        HOUSING_ADMIN_SUMMARY_JSON_MAX_BYTES, clamp_housing_summary_json_for_ipc,
-    };
-    use kawari::packet::ReadWriteIpcSegment;
 
     use super::*;
 
     fn test_db() -> WorldDatabase {
         WorldDatabase::new_at(":memory:")
-    }
-
-    fn serialize_custom_ipc(data: CustomIpcData) -> Vec<u8> {
-        let mut cursor = Cursor::new(Vec::new());
-        CustomIpcSegment::new(data)
-            .write_le(&mut cursor)
-            .expect("custom IPC segment should serialize");
-        cursor.into_inner()
     }
 
     #[test]
@@ -2597,7 +2494,7 @@ mod tests {
     }
 
     #[test]
-    fn housing_summary_json_for_admin_returns_compact_rows_with_furniture_counts() {
+    fn housing_summary_rows_for_admin_returns_compact_rows_with_furniture_counts() {
         let mut db = test_db();
         let estate = db.ensure_local_estate(100, "Tester", 67);
 
@@ -2630,42 +2527,25 @@ mod tests {
             ..Default::default()
         });
 
-        let json = db.housing_summary_json_for_admin();
-        let summary: serde_json::Value = serde_json::from_str(&json).unwrap();
-        let rows = summary
-            .as_array()
-            .expect("summary must serialize to an array");
-
+        let rows = db.housing_summary_rows_for_admin();
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0]["land_ident"].as_i64(), Some(estate.land_ident));
-        assert_eq!(rows[0]["owner_name"].as_str(), Some("Tester"));
-        assert_eq!(rows[0]["kind"].as_str(), Some("personal_estate"));
-        assert_eq!(rows[0]["size"].as_str(), Some("large"));
-        assert_eq!(rows[0]["plot"].as_str(), Some("Ward 1 Plot 6"));
-        assert_eq!(rows[0]["flags"].as_i64(), Some(estate.flags as i64));
-        assert!(rows[0].get("estate_name").is_none());
-        assert!(rows[0].get("greeting").is_none());
-        assert_eq!(
-            rows[0]["furniture_counts"]["indoor_placed"].as_u64(),
-            Some(1)
-        );
-        assert_eq!(
-            rows[0]["furniture_counts"]["indoor_storeroom"].as_u64(),
-            Some(1)
-        );
-        assert_eq!(
-            rows[0]["furniture_counts"]["outdoor_placed"].as_u64(),
-            Some(1)
-        );
-        assert_eq!(
-            rows[0]["furniture_counts"]["outdoor_storeroom"].as_u64(),
-            Some(0)
-        );
-        assert_eq!(rows[0]["furniture_counts"]["total"].as_u64(), Some(3));
+        let row = &rows[0];
+
+        assert_eq!(row.land_ident, estate.land_ident);
+        assert_eq!(row.owner_name, "Tester");
+        assert_eq!(row.kind, "personal_estate");
+        assert_eq!(row.size, "large");
+        assert_eq!(row.plot, "Ward 1 Plot 6");
+        assert_eq!(row.flags, estate.flags);
+        assert_eq!(row.furniture_counts.indoor_placed, 1);
+        assert_eq!(row.furniture_counts.indoor_storeroom, 1);
+        assert_eq!(row.furniture_counts.outdoor_placed, 1);
+        assert_eq!(row.furniture_counts.outdoor_storeroom, 0);
+        assert_eq!(row.furniture_counts.total, 3);
     }
 
     #[test]
-    fn housing_summary_json_for_admin_keeps_compact_lists_under_ipc_limit() {
+    fn housing_summary_rows_for_admin_exclude_verbose_estate_fields() {
         let mut db = test_db();
         let base = db.ensure_local_estate(100, "Tester", 67);
 
@@ -2682,33 +2562,14 @@ mod tests {
             db.insert_housing_estate_for_test(estate);
         }
 
-        let full_json = db.housing_summary_json_for_admin();
-        assert!(full_json.len() <= HOUSING_ADMIN_SUMMARY_JSON_MAX_BYTES);
-
-        let bounded = clamp_housing_summary_json_for_ipc(&full_json);
-        assert_eq!(bounded, full_json);
-
-        let parsed: serde_json::Value =
-            serde_json::from_str(&bounded).expect("bounded summary should remain valid JSON");
-        let rows = parsed
-            .as_array()
-            .expect("compact summary should serialize to an array");
+        let rows = db.housing_summary_rows_for_admin();
         assert_eq!(rows.len(), 11);
-        assert!(rows.iter().all(|row| row.get("estate_name").is_none()));
-        assert!(rows.iter().all(|row| row.get("greeting").is_none()));
-
-        let bytes = serialize_custom_ipc(CustomIpcData::HousingSummaryResponse { json: bounded });
-        assert_eq!(
-            bytes.len(),
-            CustomIpcSegment::new(CustomIpcData::HousingSummaryResponse {
-                json: String::new(),
-            })
-            .calc_size() as usize
-        );
+        assert!(rows.iter().all(|row| !row.owner_name.is_empty()));
+        assert!(rows.iter().all(|row| row.furniture_counts.total == 0));
     }
 
     #[test]
-    fn housing_estate_detail_json_for_admin_includes_counts_and_furniture_rows() {
+    fn housing_estate_detail_for_admin_includes_counts_and_furniture_rows() {
         let mut db = test_db();
         let estate = db.ensure_local_estate(100, "Tester", 67);
 
@@ -2737,121 +2598,27 @@ mod tests {
             ..Default::default()
         });
 
-        let json = db
-            .housing_estate_detail_json_for_admin(estate.land_ident)
+        let detail = db
+            .housing_estate_detail_for_admin(estate.land_ident)
             .expect("detail should exist for local estate");
-        let detail: serde_json::Value = serde_json::from_str(&json).unwrap();
-        let furniture = detail["furniture"]
-            .as_array()
-            .expect("detail must include furniture rows");
 
-        assert_eq!(
-            detail["estate"]["land_ident"].as_i64(),
-            Some(estate.land_ident)
-        );
-        assert_eq!(detail["estate"]["owner_name"].as_str(), Some("Tester"));
-        assert_eq!(
-            detail["furniture_counts"]["indoor_placed"].as_u64(),
-            Some(1)
-        );
-        assert_eq!(
-            detail["furniture_counts"]["outdoor_storeroom"].as_u64(),
-            Some(1)
-        );
-        assert_eq!(detail["furniture_counts"]["total"].as_u64(), Some(2));
-        assert_eq!(furniture.len(), 2);
-        assert_eq!(furniture[0]["item_id"].as_i64(), Some(2000));
-        assert_eq!(
-            furniture[0]["container_kind"].as_str(),
-            Some("indoor_placed")
-        );
-        assert_eq!(furniture[1]["item_id"].as_i64(), Some(2001));
-        assert_eq!(
-            furniture[1]["container_kind"].as_str(),
-            Some("outdoor_storeroom")
-        );
+        assert_eq!(detail.estate.land_ident, estate.land_ident);
+        assert_eq!(detail.estate.owner_name, "Tester");
+        assert_eq!(detail.furniture_counts.indoor_placed, 1);
+        assert_eq!(detail.furniture_counts.outdoor_storeroom, 1);
+        assert_eq!(detail.furniture_counts.total, 2);
+        assert_eq!(detail.furniture.len(), 2);
+        assert_eq!(detail.furniture[0].item_id, 2000);
+        assert_eq!(detail.furniture[0].container_kind, "indoor_placed");
+        assert_eq!(detail.furniture[1].item_id, 2001);
+        assert_eq!(detail.furniture[1].container_kind, "outdoor_storeroom");
     }
 
     #[test]
-    fn admin_detail_ipc_json_uses_bounded_fallback() {
-        let mut db = test_db();
-        let estate = db.ensure_local_estate(100, "Tester", 67);
-
-        assert!(db.update_housing_exterior_json(estate.land_ident, &"e".repeat(2048)));
-        assert!(db.update_housing_interior_json(estate.land_ident, &"i".repeat(2048)));
-
-        for slot in 0..180 {
-            db.upsert_housing_furniture(HousingFurniture {
-                land_ident: estate.land_ident,
-                container_type: container_type_to_i32(ContainerType::HousingInteriorPlacedItems1),
-                slot,
-                item_id: 3_000 + slot as i64,
-                catalog_id: 400 + slot as i32,
-                stain: slot as i32 % 8,
-                placed: true,
-                pos_x: slot as f32,
-                pos_y: slot as f32 / 2.0,
-                pos_z: slot as f32 / 3.0,
-                rotation: slot as f32 / 10.0,
-                created_by_content_id: Some(100),
-                ..Default::default()
-            });
-        }
-
-        let bounded = db
-            .housing_estate_detail_ipc_json_for_admin(estate.land_ident)
-            .expect("detail JSON should serialize")
-            .expect("detail should exist for local estate");
-        assert!(bounded.len() <= HOUSING_ADMIN_DETAIL_JSON_MAX_BYTES);
-
-        let parsed: serde_json::Value =
-            serde_json::from_str(&bounded).expect("bounded detail should remain valid JSON");
-        assert_eq!(
-            parsed["error"].as_str(),
-            Some("housing_detail_ipc_overflow")
-        );
-        assert_eq!(parsed["truncated"], true);
-        assert_eq!(parsed["land_ident"].as_i64(), Some(estate.land_ident));
-        assert_eq!(parsed["house_id"].as_i64(), Some(estate.house_id));
-        assert_eq!(
-            parsed["estate"]["land_ident"].as_i64(),
-            Some(estate.land_ident)
-        );
-        assert_eq!(
-            parsed["estate"]["estate_name"].as_str(),
-            Some(estate.estate_name.as_str())
-        );
-        assert_eq!(
-            parsed["furniture_counts"]["indoor_placed"].as_u64(),
-            Some(180)
-        );
-        assert_eq!(parsed["furniture_counts"]["total"].as_u64(), Some(180));
-        assert_eq!(parsed["furniture_omitted"].as_u64(), Some(180));
-        assert!(
-            parsed["message"]
-                .as_str()
-                .is_some_and(|message| message.contains("Export JSON"))
-        );
-
-        let bytes =
-            serialize_custom_ipc(CustomIpcData::HousingEstateDetailResponse { json: bounded });
-        assert_eq!(
-            bytes.len(),
-            CustomIpcSegment::new(CustomIpcData::HousingEstateDetailResponse {
-                json: String::new(),
-            })
-            .calc_size() as usize
-        );
-    }
-
-    #[test]
-    fn housing_estate_detail_ipc_json_for_admin_returns_none_when_estate_missing() {
+    fn housing_estate_detail_for_admin_returns_none_when_estate_missing() {
         let mut db = test_db();
 
-        assert!(matches!(
-            db.housing_estate_detail_ipc_json_for_admin(i64::MAX),
-            Ok(None)
-        ));
+        assert!(db.housing_estate_detail_for_admin(i64::MAX).is_none());
     }
 
     #[test]

@@ -1,3 +1,4 @@
+pub mod admin;
 pub mod apartment;
 pub mod constants;
 pub mod container;
