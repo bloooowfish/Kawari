@@ -1514,14 +1514,116 @@ fn validate_housing_interior_value(field: HousingInteriorField, value: u32) -> m
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use kawari::ipc::zone::PlotSize;
     use mlua::Function;
+    use parking_lot::Mutex;
 
     use super::*;
     use crate::lua::{
         HousingEstateKind, HousingExteriorColorField, HousingExteriorField, HousingInteriorField,
         HousingKit, HousingPresetScope, HousingResetMode,
     };
+
+    fn load_housing_lua_with_messages() -> (mlua::Lua, Arc<Mutex<Vec<String>>>) {
+        let lua = mlua::Lua::new();
+        lua.globals().set("GM_RANK_DEBUG", 1).unwrap();
+
+        let messages = Arc::new(Mutex::new(Vec::new()));
+        let captured_messages = messages.clone();
+        lua.globals()
+            .set(
+                "printf",
+                lua.create_function(move |_, values: mlua::MultiValue| {
+                    if let Some(mlua::Value::String(message)) = values.into_iter().nth(1) {
+                        captured_messages.lock().push(message.to_str()?.to_string());
+                    }
+
+                    Ok(())
+                })
+                .unwrap(),
+            )
+            .unwrap();
+        lua.load(include_str!(
+            "../../../../resources/scripts/commands/gm/Housing.lua"
+        ))
+        .exec()
+        .unwrap();
+
+        (lua, messages)
+    }
+
+    #[test]
+    fn housing_lua_invalid_subcommand_prints_usage_and_queues_no_tasks() {
+        let (lua, messages) = load_housing_lua_with_messages();
+
+        let player = lua.create_userdata(LuaPlayer::default()).unwrap();
+        let args = lua.create_table().unwrap();
+        args.set(1, "unknown").unwrap();
+
+        let on_command: Function = lua.globals().get("onCommand").unwrap();
+        on_command
+            .call::<()>((player.clone(), args, "housing"))
+            .unwrap();
+
+        let player = player.borrow::<LuaPlayer>().unwrap();
+        assert!(player.queued_tasks.is_empty());
+
+        let messages = messages.lock();
+        let usage = messages.join("\n");
+        assert!(usage.contains("Usage: !housing"));
+        assert!(usage.contains("reference_medium_interior"));
+        assert!(usage.contains("all|interior|indoor|exterior|outdoor"));
+    }
+
+    #[test]
+    fn housing_lua_no_arg_command_queues_default_local_house() {
+        let lua = mlua::Lua::new();
+        lua.globals().set("GM_RANK_DEBUG", 1).unwrap();
+        lua.globals()
+            .set(
+                "printf",
+                lua.create_function(|_, _: mlua::MultiValue| Ok(()))
+                    .unwrap(),
+            )
+            .unwrap();
+        lua.load(include_str!(
+            "../../../../resources/scripts/commands/gm/Housing.lua"
+        ))
+        .exec()
+        .unwrap();
+
+        let player = lua.create_userdata(LuaPlayer::default()).unwrap();
+        let args = lua.create_table().unwrap();
+
+        let on_command: Function = lua.globals().get("onCommand").unwrap();
+        on_command
+            .call::<()>((player.clone(), args, "housing"))
+            .unwrap();
+
+        let player = player.borrow::<LuaPlayer>().unwrap();
+        match player.queued_tasks.as_slice() {
+            [
+                LuaTask::EnsureTestHouseWithOptions {
+                    kind,
+                    size,
+                    territory_type_id,
+                    ward_index,
+                    division,
+                    plot_index,
+                },
+            ] => {
+                assert_eq!(*kind, HousingEstateKind::Personal);
+                assert_eq!(*size, PlotSize::Large);
+                assert_eq!(*territory_type_id, 340);
+                assert_eq!(*ward_index, 0);
+                assert_eq!(*division, 0);
+                assert_eq!(*plot_index, 5);
+            }
+            other => panic!("unexpected tasks: {other:?}"),
+        }
+    }
 
     #[test]
     fn housing_lua_testhouse_command_queues_zero_based_options() {

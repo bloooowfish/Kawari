@@ -64,9 +64,13 @@ local function lower(value)
 end
 
 local function usage(player)
-    printf(player, "Usage: !housing testhouse [personal|fc] [small|medium|large] [territory_id] [ward] [plot]")
+    printf(player, "Usage: !housing")
+    printf(player, "       !housing testhouse [personal|fc] [small|medium|large] [territory_id] [ward] [plot]")
     printf(player, "       !housing apartment [room]")
-    printf(player, "       !housing enter [apartment [room]]|exit|reload|info")
+    printf(player, "       !housing enter [apartment [room]]")
+    printf(player, "       !housing exit")
+    printf(player, "       !housing reload")
+    printf(player, "       !housing info")
     printf(player, "       !housing reset furniture|estate|all")
     printf(player, "       !housing light <0-5>")
     printf(player, "       !housing greeting <text>")
@@ -74,11 +78,11 @@ local function usage(player)
     printf(player, "       !housing exterior <field> <value>")
     printf(player, "       !housing exterior color <field> <stain>")
     printf(player, "       !housing interior <field> <value>")
-    printf(player, "       !housing interior preset reference_medium_interior")
-    printf(player, "       !housing preset [all|interior|exterior] <ReMakePlace json path or preset name> [--reload]")
-    printf(player, "       !housing preset latest [all|interior|exterior] [--reload]")
+    printf(player, "       !housing interior preset reference_medium_interior|reference_medium|retail_shirogane_medium|capture")
+    printf(player, "       !housing preset [all|interior|indoor|exterior|outdoor] <ReMakePlace json path or preset name> [--reload]")
+    printf(player, "       !housing preset latest [all|interior|indoor|exterior|outdoor] [--reload]")
     printf(player, "       !housing preset repeat [--reload]")
-    printf(player, "       !housing preset check [all|interior|exterior] <path|latest>")
+    printf(player, "       !housing preset check [all|interior|indoor|exterior|outdoor] <path|latest>")
     printf(player, "       !housing preset check repeat")
     printf(player, "       !housing givekit indoor|outdoor|npc")
 end
@@ -250,239 +254,262 @@ local function reload_suffix(reload)
     return ""
 end
 
-function onCommand(player, args, name)
-    local subcommand = lower(args[1])
+local function handle_testhouse(player, args)
+    local kind = parse_kind(args[2])
+    local size = parse_size(args[3])
+    local territory_id = parse_range(args[4], DEFAULT_TERRITORY_ID, 1, 65535)
+    local ward = parse_range(args[5], DEFAULT_WARD, 1, 30)
+    local plot = parse_range(args[6], DEFAULT_PLOT, 1, 30)
 
-    if subcommand == nil or subcommand == "testhouse" then
-        local kind = parse_kind(args[2])
-        local size = parse_size(args[3])
-        local territory_id = parse_range(args[4], DEFAULT_TERRITORY_ID, 1, 65535)
-        local ward = parse_range(args[5], DEFAULT_WARD, 1, 30)
-        local plot = parse_range(args[6], DEFAULT_PLOT, 1, 30)
-
-        if kind == nil or size == nil or territory_id == nil or ward == nil or plot == nil then
-            usage(player)
-            return
-        end
-
-        player:ensure_test_house_with_options(kind, size, territory_id, ward - 1, 0, plot - 1)
-        printf(player, "Created or refreshed your local %s %s test estate at territory %d ward %d plot %d.", kind, size, territory_id, ward, plot)
+    if kind == nil or size == nil or territory_id == nil or ward == nil or plot == nil then
+        usage(player)
         return
     end
 
-    if subcommand == "enter" then
-        local target = lower(args[2])
+    player:ensure_test_house_with_options(kind, size, territory_id, ward - 1, 0, plot - 1)
+    printf(player, "Created or refreshed your local %s %s test estate at territory %d ward %d plot %d.", kind, size, territory_id, ward, plot)
+end
 
-        if target == "apartment" then
-            local room = parse_range(args[3], 1, 1, MAX_APARTMENT_ROOM_NUMBER)
+local function handle_enter(player, args)
+    local target = lower(args[2])
 
-            if room == nil then
-                usage(player)
-                return
-            end
-
-            player:enter_test_apartment(room)
-            printf(player, "Entering your local apartment room %d.", room)
-            return
-        end
-
-        player:enter_test_house()
-        printf(player, "Entering your local test estate.")
-        return
-    end
-
-    if subcommand == "exit" then
-        player:exit_test_house()
-        printf(player, "Exiting your local test estate.")
-        return
-    end
-
-    if subcommand == "reload" then
-        player:reload_housing()
-        printf(player, "Reloading your local test estate.")
-        return
-    end
-
-    if subcommand == "info" then
-        local context = player:get_housing_ward_context()
-        printf(player, "Housing context: territory %d ward %d division %d.", context.territory_type_id, context.ward_index + 1, context.division)
-        return
-    end
-
-    if subcommand == "reset" then
-        local mode = lower(args[2])
-
-        if mode ~= "furniture" and mode ~= "estate" and mode ~= "all" then
-            usage(player)
-            return
-        end
-
-        player:reset_housing(mode)
-        printf(player, "Queued housing reset: %s.", mode)
-        return
-    end
-
-    if subcommand == "light" then
-        local level = parse_range(args[2], nil, 0, 5)
-
-        if level == nil then
-            usage(player)
-            return
-        end
-
-        player:update_housing_light(level)
-        printf(player, "Queued housing light level update: %d.", level)
-        return
-    end
-
-    if subcommand == "greeting" then
-        local greeting = join_args(args, 2)
-
-        if greeting == "" then
-            usage(player)
-            return
-        end
-
-        player:update_housing_greeting(greeting)
-        printf(player, "Queued housing greeting update.")
-        return
-    end
-
-    if subcommand == "name" then
-        local estate_name = join_args(args, 2)
-
-        if estate_name == "" then
-            usage(player)
-            return
-        end
-
-        player:update_housing_name(estate_name)
-        printf(player, "Queued housing name update.")
-        return
-    end
-
-    if subcommand == "exterior" then
-        local mode = lower(args[2])
-
-        if mode == "color" then
-            local field = lower(args[3])
-            local stain = parse_range(args[4], nil, 0, 255)
-
-            if not EXTERIOR_FIELDS[field] or stain == nil then
-                usage(player)
-                return
-            end
-
-            player:update_housing_exterior_color(field, stain)
-            printf(player, "Queued housing exterior color update: %s=%d.", field, stain)
-            return
-        end
-
-        local field = mode
-        local value = parse_range(args[3], nil, 0, 65535)
-
-        if not EXTERIOR_FIELDS[field] or value == nil then
-            usage(player)
-            return
-        end
-
-        player:update_housing_exterior(field, value)
-        printf(player, "Queued housing exterior update: %s=%d.", field, value)
-        return
-    end
-
-    if subcommand == "interior" then
-        local field = lower(args[2])
-
-        if field == "preset" then
-            local preset_name = lower(args[3])
-            local preset = INTERIOR_PRESETS[preset_name]
-
-            if preset == nil then
-                usage(player)
-                return
-            end
-
-            for _, entry in ipairs(preset) do
-                player:update_housing_interior(entry[1], entry[2])
-            end
-
-            printf(player, "Queued housing interior preset: %s.", preset_name)
-            return
-        end
-
-        local value = parse_non_negative_integer(args[3], 4294967295)
-
-        if not INTERIOR_FIELDS[field] or value == nil then
-            usage(player)
-            return
-        end
-
-        player:update_housing_interior(field, value)
-        printf(player, "Queued housing interior update: %s=%d.", field, value)
-        return
-    end
-
-    if subcommand == "preset" then
-        local preset = parse_preset_args(args)
-
-        if preset == nil then
-            usage(player)
-            return
-        end
-
-        if preset.check_only then
-            if preset.kind == "latest" then
-                player:check_latest_housing_preset(preset.scope)
-                printf(player, "Queued ReMakePlace preset check: latest (%s).", preset.scope)
-            elseif preset.kind == "repeat" then
-                player:check_repeated_housing_preset()
-                printf(player, "Queued ReMakePlace preset check: repeat.")
-            else
-                player:check_housing_preset(preset.path, preset.scope)
-                printf(player, "Queued ReMakePlace preset check: %s (%s).", preset.path, preset.scope)
-            end
-            return
-        end
-
-        if preset.kind == "latest" then
-            player:apply_latest_housing_preset(preset.scope, preset.reload)
-            printf(player, "Queued ReMakePlace housing preset: latest (%s)%s.", preset.scope, reload_suffix(preset.reload))
-        elseif preset.kind == "repeat" then
-            player:repeat_housing_preset(preset.reload)
-            printf(player, "Queued ReMakePlace housing preset: repeat%s.", reload_suffix(preset.reload))
-        else
-            player:apply_housing_preset(preset.path, preset.scope, preset.reload)
-            printf(player, "Queued ReMakePlace housing preset: %s (%s)%s.", preset.path, preset.scope, reload_suffix(preset.reload))
-        end
-        return
-    end
-
-    if subcommand == "givekit" then
-        local kit = lower(args[2])
-
-        if kit ~= "indoor" and kit ~= "outdoor" and kit ~= "npc" then
-            usage(player)
-            return
-        end
-
-        player:give_housing_kit(kit)
-        printf(player, "Queued housing %s kit.", kit)
-        return
-    end
-
-    if subcommand == "apartment" then
-        local room = parse_range(args[2], 1, 1, MAX_APARTMENT_ROOM_NUMBER)
+    if target == "apartment" then
+        local room = parse_range(args[3], 1, 1, MAX_APARTMENT_ROOM_NUMBER)
 
         if room == nil then
             usage(player)
             return
         end
 
-        player:ensure_test_apartment(room)
-        printf(player, "Created or refreshed your local apartment room %d.", room)
+        player:enter_test_apartment(room)
+        printf(player, "Entering your local apartment room %d.", room)
         return
     end
 
-    usage(player)
+    player:enter_test_house()
+    printf(player, "Entering your local test estate.")
+end
+
+local function handle_exit(player, args)
+    player:exit_test_house()
+    printf(player, "Exiting your local test estate.")
+end
+
+local function handle_reload(player, args)
+    player:reload_housing()
+    printf(player, "Reloading your local test estate.")
+end
+
+local function handle_info(player, args)
+    local context = player:get_housing_ward_context()
+    printf(player, "Housing context: territory %d ward %d division %d.", context.territory_type_id, context.ward_index + 1, context.division)
+end
+
+local function handle_reset(player, args)
+    local mode = lower(args[2])
+
+    if mode ~= "furniture" and mode ~= "estate" and mode ~= "all" then
+        usage(player)
+        return
+    end
+
+    player:reset_housing(mode)
+    printf(player, "Queued housing reset: %s.", mode)
+end
+
+local function handle_light(player, args)
+    local level = parse_range(args[2], nil, 0, 5)
+
+    if level == nil then
+        usage(player)
+        return
+    end
+
+    player:update_housing_light(level)
+    printf(player, "Queued housing light level update: %d.", level)
+end
+
+local function handle_greeting(player, args)
+    local greeting = join_args(args, 2)
+
+    if greeting == "" then
+        usage(player)
+        return
+    end
+
+    player:update_housing_greeting(greeting)
+    printf(player, "Queued housing greeting update.")
+end
+
+local function handle_name(player, args)
+    local estate_name = join_args(args, 2)
+
+    if estate_name == "" then
+        usage(player)
+        return
+    end
+
+    player:update_housing_name(estate_name)
+    printf(player, "Queued housing name update.")
+end
+
+local function handle_exterior(player, args)
+    local mode = lower(args[2])
+
+    if mode == "color" then
+        local field = lower(args[3])
+        local stain = parse_range(args[4], nil, 0, 255)
+
+        if not EXTERIOR_FIELDS[field] or stain == nil then
+            usage(player)
+            return
+        end
+
+        player:update_housing_exterior_color(field, stain)
+        printf(player, "Queued housing exterior color update: %s=%d.", field, stain)
+        return
+    end
+
+    local field = mode
+    local value = parse_range(args[3], nil, 0, 65535)
+
+    if not EXTERIOR_FIELDS[field] or value == nil then
+        usage(player)
+        return
+    end
+
+    player:update_housing_exterior(field, value)
+    printf(player, "Queued housing exterior update: %s=%d.", field, value)
+end
+
+local function handle_interior(player, args)
+    local field = lower(args[2])
+
+    if field == "preset" then
+        local preset_name = lower(args[3])
+        local preset = INTERIOR_PRESETS[preset_name]
+
+        if preset == nil then
+            usage(player)
+            return
+        end
+
+        for _, entry in ipairs(preset) do
+            player:update_housing_interior(entry[1], entry[2])
+        end
+
+        printf(player, "Queued housing interior preset: %s.", preset_name)
+        return
+    end
+
+    local value = parse_non_negative_integer(args[3], 4294967295)
+
+    if not INTERIOR_FIELDS[field] or value == nil then
+        usage(player)
+        return
+    end
+
+    player:update_housing_interior(field, value)
+    printf(player, "Queued housing interior update: %s=%d.", field, value)
+end
+
+local function handle_preset_check(player, preset)
+    if preset.kind == "latest" then
+        player:check_latest_housing_preset(preset.scope)
+        printf(player, "Queued ReMakePlace preset check: latest (%s).", preset.scope)
+    elseif preset.kind == "repeat" then
+        player:check_repeated_housing_preset()
+        printf(player, "Queued ReMakePlace preset check: repeat.")
+    else
+        player:check_housing_preset(preset.path, preset.scope)
+        printf(player, "Queued ReMakePlace preset check: %s (%s).", preset.path, preset.scope)
+    end
+end
+
+local function handle_preset_apply(player, preset)
+    if preset.kind == "latest" then
+        player:apply_latest_housing_preset(preset.scope, preset.reload)
+        printf(player, "Queued ReMakePlace housing preset: latest (%s)%s.", preset.scope, reload_suffix(preset.reload))
+    elseif preset.kind == "repeat" then
+        player:repeat_housing_preset(preset.reload)
+        printf(player, "Queued ReMakePlace housing preset: repeat%s.", reload_suffix(preset.reload))
+    else
+        player:apply_housing_preset(preset.path, preset.scope, preset.reload)
+        printf(player, "Queued ReMakePlace housing preset: %s (%s)%s.", preset.path, preset.scope, reload_suffix(preset.reload))
+    end
+end
+
+local function handle_preset(player, args)
+    local preset = parse_preset_args(args)
+
+    if preset == nil then
+        usage(player)
+        return
+    end
+
+    if preset.check_only then
+        handle_preset_check(player, preset)
+        return
+    end
+
+    handle_preset_apply(player, preset)
+end
+
+local function handle_givekit(player, args)
+    local kit = lower(args[2])
+
+    if kit ~= "indoor" and kit ~= "outdoor" and kit ~= "npc" then
+        usage(player)
+        return
+    end
+
+    player:give_housing_kit(kit)
+    printf(player, "Queued housing %s kit.", kit)
+end
+
+local function handle_apartment(player, args)
+    local room = parse_range(args[2], 1, 1, MAX_APARTMENT_ROOM_NUMBER)
+
+    if room == nil then
+        usage(player)
+        return
+    end
+
+    player:ensure_test_apartment(room)
+    printf(player, "Created or refreshed your local apartment room %d.", room)
+end
+
+local COMMAND_HANDLERS = {
+    apartment = handle_apartment,
+    enter = handle_enter,
+    exit = handle_exit,
+    exterior = handle_exterior,
+    givekit = handle_givekit,
+    greeting = handle_greeting,
+    info = handle_info,
+    interior = handle_interior,
+    light = handle_light,
+    name = handle_name,
+    preset = handle_preset,
+    reload = handle_reload,
+    reset = handle_reset,
+    testhouse = handle_testhouse,
+}
+
+function onCommand(player, args, name)
+    local subcommand = lower(args[1])
+
+    if subcommand == nil then
+        handle_testhouse(player, args)
+        return
+    end
+
+    local handler = COMMAND_HANDLERS[subcommand]
+
+    if handler == nil then
+        usage(player)
+        return
+    end
+
+    handler(player, args)
 end

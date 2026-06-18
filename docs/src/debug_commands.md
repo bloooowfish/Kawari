@@ -16,7 +16,7 @@ These special debug commands start with `!` and are custom to Kawari.
 | `!festival <id1> <id2> <id3> <id4>` | Sets the festival in the current zone. Multiple festivals can be set together to create interesting effects. |
 | `!finishevent` | Forcefully finishes the current event, useful if the script has an error and you're stuck talking to something. |
 | `!gate` | Spawns a non-functional debug GATE. |
-| `!housing testhouse [personal|fc] [small|medium|large] [territory_id] [ward] [plot]` | Creates or refreshes a local test estate. Also supports `enter`, `exit`, `info`, `reset furniture|estate|all`, `light <0-5>`, `greeting <text>`, `name <text>`, `exterior <field> <value>`, `exterior color <field> <stain>`, `interior <field> <value>`, `interior preset capture_shirogane_medium_mist_style`, `preset [all|interior|exterior] <ReMakePlace json path or preset name>`, and `givekit indoor|outdoor|npc`. |
+| `!housing [subcommand]` | Creates or refreshes the default local test estate with no arguments. See [Housing command](#housing-command) for all forms. |
 | `!item <name>` | Gives you an item matching by name. |
 | `!inspect` | Prints info about the player. |
 | `!itemlevel <level>` | Temporarily set your own item level. |
@@ -46,3 +46,23 @@ These special debug commands start with `!` and are custom to Kawari.
 | `!toggleaethercurrentcompflgset <id>` | Toggles the unlock status of the specified AetherCurrentCompFlgSet ID. |
 | `!toggleallcutscene` | Marks all cutscenes as seen. |
 | `!yell <id>` | Sends a debug NpcYell. |
+
+## Housing command
+
+`!housing` with no arguments is equivalent to `!housing testhouse` with defaults: a local personal large estate in territory `340`, ward `1`, plot `6`.
+
+Supported forms:
+
+- `!housing testhouse [personal|fc] [small|medium|large] [territory_id] [ward] [plot]` creates or refreshes a local test estate.
+- `!housing apartment [room]` creates or refreshes a local apartment room.
+- `!housing enter [apartment [room]]`, `!housing exit`, `!housing reload`, and `!housing info` enter, leave, reload, or print the active housing context.
+- `!housing reset furniture|estate|all`, `!housing name <text>`, `!housing greeting <text>`, and `!housing light <0-5>` queue estate updates.
+- `!housing exterior <field> <value>` and `!housing exterior color <field> <stain>` update exterior fixture or stain values.
+- `!housing interior <field> <value>` updates interior fixture values.
+- `!housing interior preset reference_medium_interior` applies the canonical reference medium interior preset. Current compatibility aliases are `reference_medium`, `retail_shirogane_medium`, and `capture`.
+- `!housing preset [all|interior|indoor|exterior|outdoor] <ReMakePlace json path or preset name> [--reload]` applies a ReMakePlace preset path or saved preset name.
+- `!housing preset latest [all|interior|indoor|exterior|outdoor] [--reload]` applies the latest resolved ReMakePlace preset.
+- `!housing preset repeat [--reload]` repeats the previous ReMakePlace preset apply.
+- `!housing preset check [all|interior|indoor|exterior|outdoor] <path|latest>` validates a ReMakePlace preset without applying it.
+- `!housing preset check repeat` validates the previous ReMakePlace preset without applying it.
+- `!housing givekit indoor|outdoor|npc` grants housing test kits.
