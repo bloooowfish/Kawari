@@ -312,11 +312,11 @@ impl ZoneConnection {
                     )
                     .await;
                 }
-                LuaTask::EnsureTestApartment { room_number } => {
+                LuaTask::EnsureLocalApartment { room_number } => {
                     let Some(estate) = ({
                         let context = self.apartment_ward_context_or_default();
                         let mut database = self.database.lock();
-                        database.ensure_test_apartment(
+                        database.ensure_local_apartment(
                             self.player_data.character.content_id as u64,
                             &self.player_data.character.name,
                             self.config.world_id,
@@ -340,10 +340,10 @@ impl ZoneConnection {
                     .await;
                     self.send_owned_housing().await;
                 }
-                LuaTask::EnsureTestHouse {} => {
+                LuaTask::EnsureLocalHouse {} => {
                     let (house_id, land_ident, estate_name) = {
                         let mut database = self.database.lock();
-                        let estate = database.ensure_test_estate(
+                        let estate = database.ensure_local_estate(
                             self.player_data.character.content_id as u64,
                             &self.player_data.character.name,
                             self.config.world_id,
@@ -362,7 +362,7 @@ impl ZoneConnection {
                     .await;
                     self.send_owned_housing().await;
                 }
-                LuaTask::EnsureTestHouseWithOptions {
+                LuaTask::EnsureLocalHouseWithOptions {
                     kind,
                     size,
                     territory_type_id,
@@ -372,7 +372,7 @@ impl ZoneConnection {
                 } => {
                     let (house_id, land_ident, estate_name, estate) = {
                         let mut database = self.database.lock();
-                        let estate = database.ensure_test_estate_with_spec(HousingEstateSpec {
+                        let estate = database.ensure_local_estate_with_spec(HousingEstateSpec {
                             owner_content_id: self.player_data.character.content_id as u64,
                             owner_name: self.player_data.character.name.clone(),
                             world_id: self.config.world_id,
@@ -825,14 +825,14 @@ impl ZoneConnection {
                         .await;
                     }
                 }
-                LuaTask::EnterTestApartment { room_number } => {
-                    self.enter_test_apartment(*room_number).await;
+                LuaTask::EnterLocalApartment { room_number } => {
+                    self.enter_local_apartment(*room_number).await;
                 }
-                LuaTask::EnterTestHouse {} => {
-                    self.enter_test_house().await;
+                LuaTask::EnterLocalHouse {} => {
+                    self.enter_local_house().await;
                 }
-                LuaTask::ExitTestHouse {} => {
-                    self.exit_test_house().await;
+                LuaTask::ExitLocalHouse {} => {
+                    self.exit_local_house().await;
                 }
                 LuaTask::ReloadHousing {} => {
                     self.reload_current_housing_interior().await;
@@ -1717,7 +1717,7 @@ async fn reload_housing_after_preset(connection: &mut ZoneConnection, scope: Hou
         "Reloading housing after ReMakePlace preset"
     );
     if matches!(scope, HousingPresetScope::Exterior) {
-        connection.exit_test_house().await;
+        connection.exit_local_house().await;
     } else {
         connection.reload_current_housing_interior().await;
     }
@@ -1812,7 +1812,7 @@ mod tests {
 
     fn run_malformed_update_task(task: LuaTask, target_field_json: &str) {
         let mut database = WorldDatabase::new_at(":memory:");
-        let estate = database.ensure_test_estate(100, "Tester", 67);
+        let estate = database.ensure_local_estate(100, "Tester", 67);
         let before = database
             .housing_estate_by_house_id(HouseId::from_u64(estate.house_id as u64))
             .expect("ensured house should exist");

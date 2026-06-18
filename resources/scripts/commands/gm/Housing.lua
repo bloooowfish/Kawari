@@ -254,7 +254,7 @@ local function reload_suffix(reload)
     return ""
 end
 
-local function handle_testhouse(player, args)
+local function handle_local_house(player, args)
     local kind = parse_kind(args[2])
     local size = parse_size(args[3])
     local territory_id = parse_range(args[4], DEFAULT_TERRITORY_ID, 1, 65535)
@@ -266,8 +266,8 @@ local function handle_testhouse(player, args)
         return
     end
 
-    player:ensure_test_house_with_options(kind, size, territory_id, ward - 1, 0, plot - 1)
-    printf(player, "Created or refreshed your local %s %s test estate at territory %d ward %d plot %d.", kind, size, territory_id, ward, plot)
+    player:ensure_local_house_with_options(kind, size, territory_id, ward - 1, 0, plot - 1)
+    printf(player, "Created or refreshed your local debug %s %s estate at territory %d ward %d plot %d.", kind, size, territory_id, ward, plot)
 end
 
 local function handle_enter(player, args)
@@ -281,23 +281,23 @@ local function handle_enter(player, args)
             return
         end
 
-        player:enter_test_apartment(room)
+        player:enter_local_apartment(room)
         printf(player, "Entering your local apartment room %d.", room)
         return
     end
 
-    player:enter_test_house()
-    printf(player, "Entering your local test estate.")
+    player:enter_local_house()
+    printf(player, "Entering your local debug estate.")
 end
 
 local function handle_exit(player, args)
-    player:exit_test_house()
-    printf(player, "Exiting your local test estate.")
+    player:exit_local_house()
+    printf(player, "Exiting your local debug estate.")
 end
 
 local function handle_reload(player, args)
     player:reload_housing()
-    printf(player, "Reloading your local test estate.")
+    printf(player, "Reloading your local debug estate.")
 end
 
 local function handle_info(player, args)
@@ -475,7 +475,7 @@ local function handle_apartment(player, args)
         return
     end
 
-    player:ensure_test_apartment(room)
+    player:ensure_local_apartment(room)
     printf(player, "Created or refreshed your local apartment room %d.", room)
 end
 
@@ -493,14 +493,14 @@ local COMMAND_HANDLERS = {
     preset = handle_preset,
     reload = handle_reload,
     reset = handle_reset,
-    testhouse = handle_testhouse,
+    testhouse = handle_local_house,
 }
 
 function onCommand(player, args, name)
     local subcommand = lower(args[1])
 
     if subcommand == nil then
-        handle_testhouse(player, args)
+        handle_local_house(player, args)
         return
     end
 

@@ -14,9 +14,9 @@ use crate::inventory::{
     interior_storeroom_containers,
 };
 use crate::{
-    HousingEstate, HousingFurniture, HousingPlotLocation, ItemInfoQuery, MAX_APARTMENT_ROOM_NUMBER,
-    TEST_HOUSING_DIVISION, TEST_HOUSING_PLOT_INDEX, TEST_HOUSING_WARD_INDEX, ToServer,
-    WorldDatabase,
+    DEFAULT_LOCAL_HOUSING_DIVISION, DEFAULT_LOCAL_HOUSING_PLOT_INDEX,
+    DEFAULT_LOCAL_HOUSING_WARD_INDEX, HousingEstate, HousingFurniture, HousingPlotLocation,
+    ItemInfoQuery, MAX_APARTMENT_ROOM_NUMBER, ToServer, WorldDatabase,
     lua::{HousingExteriorColorField, HousingExteriorField, HousingInteriorField},
 };
 use kawari::{
@@ -86,10 +86,10 @@ struct OutdoorHousingLocation {
     raw_plot_index: u8,
 }
 
-const TEST_HOUSING_INDOOR_TERRITORY_TYPE_ID_SMALL: u16 = 1249; // Simple Style cottage/small house interior
-const TEST_HOUSING_INDOOR_TERRITORY_TYPE_ID_MEDIUM: u16 = 1250; // Simple Style house/medium house interior
-const TEST_HOUSING_INDOOR_TERRITORY_TYPE_ID_LARGE: u16 = 1251; // Simple Style mansion/large house interior
-const TEST_APARTMENT_INDOOR_TERRITORY_TYPE_ID: u16 = 609; // Lily Hills apartment interior
+const DEFAULT_LOCAL_HOUSING_INDOOR_TERRITORY_TYPE_ID_SMALL: u16 = 1249; // Simple Style cottage/small house interior
+const DEFAULT_LOCAL_HOUSING_INDOOR_TERRITORY_TYPE_ID_MEDIUM: u16 = 1250; // Simple Style house/medium house interior
+const DEFAULT_LOCAL_HOUSING_INDOOR_TERRITORY_TYPE_ID_LARGE: u16 = 1251; // Simple Style mansion/large house interior
+const DEFAULT_LOCAL_APARTMENT_INDOOR_TERRITORY_TYPE_ID: u16 = 609; // Lily Hills apartment interior
 const FREE_COMPANY_HOUSING_FLAG: i32 = 0x10;
 const MINIMAL_INTERIOR_WALL: u32 = 66111; // Pure White Interior Wall, Item.AdditionalData
 const MINIMAL_INTERIOR_FLOOR: u32 = 65591; // Light Wood Flooring, Item.AdditionalData
@@ -137,9 +137,9 @@ impl ZoneConnection {
                     database.housing_estate_by_location(
                         zone_id,
                         self.config.world_id,
-                        TEST_HOUSING_WARD_INDEX,
-                        TEST_HOUSING_DIVISION,
-                        TEST_HOUSING_PLOT_INDEX,
+                        DEFAULT_LOCAL_HOUSING_WARD_INDEX,
+                        DEFAULT_LOCAL_HOUSING_DIVISION,
+                        DEFAULT_LOCAL_HOUSING_PLOT_INDEX,
                     )
                 };
 
@@ -171,8 +171,8 @@ impl ZoneConnection {
     fn default_housing_ward_context(&self) -> ActiveHousingWardContext {
         ActiveHousingWardContext {
             territory_type_id: self.player_data.volatile.zone_id as u16,
-            ward_index: TEST_HOUSING_WARD_INDEX,
-            division: TEST_HOUSING_DIVISION,
+            ward_index: DEFAULT_LOCAL_HOUSING_WARD_INDEX,
+            division: DEFAULT_LOCAL_HOUSING_DIVISION,
         }
     }
 
@@ -183,9 +183,9 @@ impl ZoneConnection {
         }
 
         ActiveHousingWardContext {
-            territory_type_id: crate::TEST_HOUSING_TERRITORY_TYPE_ID,
-            ward_index: TEST_HOUSING_WARD_INDEX,
-            division: TEST_HOUSING_DIVISION,
+            territory_type_id: crate::DEFAULT_LOCAL_HOUSING_TERRITORY_TYPE_ID,
+            ward_index: DEFAULT_LOCAL_HOUSING_WARD_INDEX,
+            division: DEFAULT_LOCAL_HOUSING_DIVISION,
         }
     }
 
@@ -412,7 +412,7 @@ impl ZoneConnection {
         self.display_housing_ward_context = Some(ActiveHousingWardContext {
             territory_type_id: zone_id,
             ward_index,
-            division: TEST_HOUSING_DIVISION,
+            division: DEFAULT_LOCAL_HOUSING_DIVISION,
         });
 
         let ward_info = build_housing_ward_info(
@@ -2469,11 +2469,11 @@ impl ZoneConnection {
         .await;
     }
 
-    pub async fn enter_test_house(&mut self) {
+    pub async fn enter_local_house(&mut self) {
         let active_estate = self.active_housing_estate.clone();
         let estate = {
             let mut database = self.database.lock();
-            selected_or_default_test_estate(
+            selected_or_default_local_estate(
                 &mut database,
                 active_estate.as_ref(),
                 self.player_data.character.content_id as u64,
@@ -2491,7 +2491,7 @@ impl ZoneConnection {
             land_ident = estate.land_ident,
             house_id = estate.house_id,
             territory_type_id = indoor_territory_type_id,
-            "Entering test house interior"
+            "Entering local house interior"
         );
 
         self.change_zone(
@@ -2507,7 +2507,7 @@ impl ZoneConnection {
         let active_estate = self.active_housing_estate.clone();
         let estate = {
             let mut database = self.database.lock();
-            selected_or_default_test_estate(
+            selected_or_default_local_estate(
                 &mut database,
                 active_estate.as_ref(),
                 self.player_data.character.content_id as u64,
@@ -2521,7 +2521,7 @@ impl ZoneConnection {
         let is_apartment = estate.is_apartment && estate.room_number > 0;
         let entry = housing_indoor_entry_transform(is_apartment);
         let indoor_territory_type_id = if is_apartment {
-            TEST_APARTMENT_INDOOR_TERRITORY_TYPE_ID
+            DEFAULT_LOCAL_APARTMENT_INDOOR_TERRITORY_TYPE_ID
         } else {
             self.housing_indoor_territory_type_id_for_estate(&estate)
         };
@@ -2543,7 +2543,7 @@ impl ZoneConnection {
         .await;
     }
 
-    pub async fn enter_test_apartment(&mut self, room_number: u16) {
+    pub async fn enter_local_apartment(&mut self, room_number: u16) {
         if !valid_apartment_room_number(room_number) {
             self.send_notice(&format!(
                 "Apartment room numbers must be between 1 and {MAX_APARTMENT_ROOM_NUMBER}."
@@ -2555,7 +2555,7 @@ impl ZoneConnection {
         let context = self.apartment_ward_context_or_default();
         let Some(estate) = ({
             let mut database = self.database.lock();
-            database.ensure_test_apartment(
+            database.ensure_local_apartment(
                 self.player_data.character.content_id as u64,
                 &self.player_data.character.name,
                 self.config.world_id,
@@ -2578,14 +2578,14 @@ impl ZoneConnection {
             content_id = self.player_data.character.content_id,
             land_ident = estate.land_ident,
             house_id = estate.house_id,
-            territory_type_id = TEST_APARTMENT_INDOOR_TERRITORY_TYPE_ID,
+            territory_type_id = DEFAULT_LOCAL_APARTMENT_INDOOR_TERRITORY_TYPE_ID,
             room_number,
-            "Entering test apartment interior"
+            "Entering local apartment interior"
         );
 
         let entry = housing_indoor_entry_transform(true);
         self.change_zone(
-            TEST_APARTMENT_INDOOR_TERRITORY_TYPE_ID,
+            DEFAULT_LOCAL_APARTMENT_INDOOR_TERRITORY_TYPE_ID,
             Some(entry.position),
             Some(entry.rotation),
             None,
@@ -2593,7 +2593,7 @@ impl ZoneConnection {
         .await;
     }
 
-    pub async fn exit_test_house(&mut self) {
+    pub async fn exit_local_house(&mut self) {
         let active_house_id = self
             .active_housing_estate
             .as_ref()
@@ -2615,9 +2615,9 @@ impl ZoneConnection {
         let Some(estate) = estate else {
             tracing::warn!(
                 content_id = self.player_data.character.content_id,
-                "Unable to resolve a housing estate while exiting test house; falling back to New Gridania"
+                "Unable to resolve a housing estate while exiting local house; falling back to New Gridania"
             );
-            self.send_notice("Unable to resolve your test estate; falling back to New Gridania.")
+            self.send_notice("Unable to resolve your local estate; falling back to New Gridania.")
                 .await;
             self.warp_aetheryte(2, false, false).await;
             return;
@@ -2631,7 +2631,7 @@ impl ZoneConnection {
             land_ident = estate.land_ident,
             territory_type_id = estate.territory_type_id,
             raw_plot_index = plot_location.map(|location| location.raw_plot_index),
-            "Exiting test house to housing outdoor territory"
+            "Exiting local house to housing outdoor territory"
         );
 
         if let Some(plot_location) = plot_location {
@@ -2777,7 +2777,7 @@ fn valid_apartment_room_number(room_number: u16) -> bool {
     (1..=MAX_APARTMENT_ROOM_NUMBER).contains(&room_number)
 }
 
-fn selected_or_default_test_estate(
+fn selected_or_default_local_estate(
     database: &mut WorldDatabase,
     active_estate: Option<&ActiveHousingEstate>,
     owner_content_id: u64,
@@ -2785,7 +2785,7 @@ fn selected_or_default_test_estate(
     world_id: u16,
 ) -> HousingEstate {
     selected_or_owned_housing_estate(database, active_estate, owner_content_id)
-        .unwrap_or_else(|| database.ensure_test_estate(owner_content_id, owner_name, world_id))
+        .unwrap_or_else(|| database.ensure_local_estate(owner_content_id, owner_name, world_id))
 }
 
 fn housing_estate_plot_size(estate: &HousingEstate) -> PlotSize {
@@ -2806,9 +2806,9 @@ fn housing_interior_placed_slot_capacity_for_estate(estate: &HousingEstate) -> u
 
 fn simple_housing_indoor_territory_type_id(plot_size: PlotSize) -> u16 {
     match plot_size {
-        PlotSize::Small => TEST_HOUSING_INDOOR_TERRITORY_TYPE_ID_SMALL,
-        PlotSize::Medium => TEST_HOUSING_INDOOR_TERRITORY_TYPE_ID_MEDIUM,
-        PlotSize::Large => TEST_HOUSING_INDOOR_TERRITORY_TYPE_ID_LARGE,
+        PlotSize::Small => DEFAULT_LOCAL_HOUSING_INDOOR_TERRITORY_TYPE_ID_SMALL,
+        PlotSize::Medium => DEFAULT_LOCAL_HOUSING_INDOOR_TERRITORY_TYPE_ID_MEDIUM,
+        PlotSize::Large => DEFAULT_LOCAL_HOUSING_INDOOR_TERRITORY_TYPE_ID_LARGE,
     }
 }
 
@@ -3164,7 +3164,7 @@ fn build_apartment_list_entries(
             visitors_permitted: estate.flags & (HousingFlag::OPEN.bits() as i32) != 0,
             resident_name: estate.owner_name,
             apartment_description: if estate.greeting.is_empty() {
-                "A local Kawari test apartment.".to_string()
+                "A local Kawari debug apartment.".to_string()
             } else {
                 estate.greeting
             },
@@ -3420,7 +3420,7 @@ struct HouseInteriorJson {
 }
 
 fn house_exterior_from_json(json: &str) -> HouseExterior {
-    let fallback = test_estate_house_exterior();
+    let fallback = local_estate_house_exterior();
     let exterior = parse_housing_json_or_default::<HouseExteriorJson>(json, "housing exterior");
     let colors = exterior.colors.unwrap_or_default();
 
@@ -3450,7 +3450,7 @@ fn house_exterior_from_json(json: &str) -> HouseExterior {
     }
 }
 
-fn test_estate_house_exterior() -> HouseExterior {
+fn local_estate_house_exterior() -> HouseExterior {
     HouseExterior {
         roof_id: 1081,
         walls_id: 3632,
@@ -4485,7 +4485,7 @@ fn housing_exterior_color_field_for_appearance_slot(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{HousingEstateSpec, TEST_HOUSING_LAND_FLAGS, WorldDatabase};
+    use crate::{DEFAULT_LOCAL_HOUSING_LAND_FLAGS, HousingEstateSpec, WorldDatabase};
     use kawari::common::HouseUnit;
     use kawari::{
         common::HousingFlag,
@@ -4574,10 +4574,10 @@ mod tests {
             division,
             plot_index,
             owner_content_id: Some(12345),
-            owner_name: "Test Owner".to_string(),
+            owner_name: "Local Owner".to_string(),
             plot_size: PlotSize::Large as i32,
             flags,
-            estate_name: "Test Estate".to_string(),
+            estate_name: "Local Estate".to_string(),
             greeting: "Welcome from the DB.".to_string(),
             exterior_json: "{}".to_string(),
             ..Default::default()
@@ -4596,7 +4596,7 @@ mod tests {
         assert_eq!(ward_info.tenant_type, TenantType::Any);
 
         let summary = &ward_info.house_summaries[5];
-        assert_eq!(summary.name, "Test Estate");
+        assert_eq!(summary.name, "Local Estate");
         assert_eq!(
             summary.flags,
             HousingFlags::PLOT_OWNED | HousingFlags::VISITORS_ALLOWED | HousingFlags::HOUSE_BUILT
@@ -4613,11 +4613,11 @@ mod tests {
         let land_info = housing_occupied_land_info_from_estate(&ward_estate(5, 0, 0x0B));
 
         assert_eq!(land_info.owner_id, 12345);
-        assert_eq!(land_info.owner_name, "Test Owner");
+        assert_eq!(land_info.owner_name, "Local Owner");
         assert_eq!(land_info.fc_tag, "");
         assert_eq!(land_info.house_size, PlotSize::Large);
         assert_eq!(land_info.house_icon, 1);
-        assert_eq!(land_info.estate_name, "Test Estate");
+        assert_eq!(land_info.estate_name, "Local Estate");
         assert_eq!(land_info.estate_greeting, "Welcome from the DB.");
     }
 
@@ -4686,7 +4686,7 @@ mod tests {
             is_apartment: true,
             owner_name: "Room Two".to_string(),
             greeting: "Second room greeting".to_string(),
-            flags: TEST_HOUSING_LAND_FLAGS,
+            flags: DEFAULT_LOCAL_HOUSING_LAND_FLAGS,
             ..Default::default()
         };
         let room_3 = HousingEstate {
@@ -4699,7 +4699,7 @@ mod tests {
             is_apartment: true,
             owner_name: "Room Three".to_string(),
             greeting: "Third room greeting".to_string(),
-            flags: TEST_HOUSING_LAND_FLAGS,
+            flags: DEFAULT_LOCAL_HOUSING_LAND_FLAGS,
             ..Default::default()
         };
 
@@ -5487,8 +5487,8 @@ mod tests {
 
     #[test]
     fn housing_outdoor_exit_plot_location_uses_estate_raw_landset_entry() {
-        let main = ward_estate(5, 0, TEST_HOUSING_LAND_FLAGS);
-        let subdivision = ward_estate(5, 1, TEST_HOUSING_LAND_FLAGS);
+        let main = ward_estate(5, 0, DEFAULT_LOCAL_HOUSING_LAND_FLAGS);
+        let subdivision = ward_estate(5, 1, DEFAULT_LOCAL_HOUSING_LAND_FLAGS);
 
         let main_location = housing_outdoor_exit_plot_location(&main)
             .expect("main division estate should resolve to a plot entrance request");
@@ -5503,12 +5503,12 @@ mod tests {
 
     #[test]
     fn housing_outdoor_exit_plot_location_rejects_apartments_and_invalid_plots() {
-        let mut apartment = ward_estate(0, 0, TEST_HOUSING_LAND_FLAGS);
+        let mut apartment = ward_estate(0, 0, DEFAULT_LOCAL_HOUSING_LAND_FLAGS);
         apartment.is_apartment = true;
         apartment.room_number = 1;
 
-        let invalid_division = ward_estate(5, 2, TEST_HOUSING_LAND_FLAGS);
-        let invalid_plot = ward_estate(30, 0, TEST_HOUSING_LAND_FLAGS);
+        let invalid_division = ward_estate(5, 2, DEFAULT_LOCAL_HOUSING_LAND_FLAGS);
+        let invalid_plot = ward_estate(30, 0, DEFAULT_LOCAL_HOUSING_LAND_FLAGS);
 
         assert_eq!(housing_outdoor_exit_plot_location(&apartment), None);
         assert_eq!(housing_outdoor_exit_plot_location(&invalid_division), None);
@@ -5517,7 +5517,7 @@ mod tests {
 
     #[test]
     fn housing_indoor_login_exit_location_moves_house_to_outdoor_front_door() {
-        let house = ward_estate(5, 0, TEST_HOUSING_LAND_FLAGS);
+        let house = ward_estate(5, 0, DEFAULT_LOCAL_HOUSING_LAND_FLAGS);
 
         let location =
             housing_indoor_login_exit_location(TerritoryIntendedUse::HousingIndoor, Some(&house))
@@ -5537,7 +5537,7 @@ mod tests {
 
     #[test]
     fn housing_indoor_login_exit_location_preserves_subdivision_raw_plot_location() {
-        let house = ward_estate(5, 1, TEST_HOUSING_LAND_FLAGS);
+        let house = ward_estate(5, 1, DEFAULT_LOCAL_HOUSING_LAND_FLAGS);
 
         let location =
             housing_indoor_login_exit_location(TerritoryIntendedUse::HousingIndoor, Some(&house))
@@ -5591,7 +5591,7 @@ mod tests {
     #[test]
     fn outdoor_interior_pattern_can_use_owned_house_without_active_ward_context() {
         let mut database = WorldDatabase::new_at(":memory:");
-        let mut owned_estate = ward_estate(5, 0, TEST_HOUSING_LAND_FLAGS);
+        let mut owned_estate = ward_estate(5, 0, DEFAULT_LOCAL_HOUSING_LAND_FLAGS);
         owned_estate.owner_content_id = Some(100);
         owned_estate.land_ident = 55;
         database.insert_housing_estate_for_test(owned_estate.clone());
@@ -5609,7 +5609,7 @@ mod tests {
 
     #[test]
     fn housing_indoor_init_resolves_when_active_estate_is_missing_or_outdoor() {
-        let estate = ward_estate(5, 0, TEST_HOUSING_LAND_FLAGS);
+        let estate = ward_estate(5, 0, DEFAULT_LOCAL_HOUSING_LAND_FLAGS);
         let outdoor = active_housing_estate(&estate, false);
         let indoor = active_housing_estate(&estate, true);
 
@@ -5926,11 +5926,11 @@ mod tests {
     #[test]
     fn outdoor_edit_resolution_requires_active_ward_context_even_with_owned_default_estate() {
         let mut estate = ward_estate(
-            TEST_HOUSING_PLOT_INDEX as i32,
-            TEST_HOUSING_DIVISION as i32,
-            TEST_HOUSING_LAND_FLAGS,
+            DEFAULT_LOCAL_HOUSING_PLOT_INDEX as i32,
+            DEFAULT_LOCAL_HOUSING_DIVISION as i32,
+            DEFAULT_LOCAL_HOUSING_LAND_FLAGS,
         );
-        estate.ward_index = TEST_HOUSING_WARD_INDEX as i32;
+        estate.ward_index = DEFAULT_LOCAL_HOUSING_WARD_INDEX as i32;
         estate.owner_content_id = Some(100);
 
         let mut database = WorldDatabase::new_at(":memory:");
@@ -5941,17 +5941,17 @@ mod tests {
                 &mut database,
                 None,
                 21,
-                TEST_HOUSING_PLOT_INDEX,
+                DEFAULT_LOCAL_HOUSING_PLOT_INDEX,
                 100,
             )
             .is_none(),
-            "outdoor placement/edit must not fabricate TEST ward context for authoritative writes"
+            "outdoor placement/edit must not fabricate default local ward context for authoritative writes"
         );
     }
 
     #[test]
     fn ward_browse_context_is_display_only_and_does_not_authorize_outdoor_writes() {
-        let mut estate = ward_estate(5, 0, TEST_HOUSING_LAND_FLAGS);
+        let mut estate = ward_estate(5, 0, DEFAULT_LOCAL_HOUSING_LAND_FLAGS);
         estate.owner_content_id = Some(100);
 
         let mut database = WorldDatabase::new_at(":memory:");
@@ -5964,8 +5964,8 @@ mod tests {
         };
         let default_context = ActiveHousingWardContext {
             territory_type_id: 999,
-            ward_index: TEST_HOUSING_WARD_INDEX,
-            division: TEST_HOUSING_DIVISION,
+            ward_index: DEFAULT_LOCAL_HOUSING_WARD_INDEX,
+            division: DEFAULT_LOCAL_HOUSING_DIVISION,
         };
 
         assert_eq!(
@@ -6012,7 +6012,7 @@ mod tests {
 
     #[test]
     fn vacant_placard_context_is_display_only_and_does_not_authorize_outdoor_writes() {
-        let mut estate = ward_estate(5, 0, TEST_HOUSING_LAND_FLAGS);
+        let mut estate = ward_estate(5, 0, DEFAULT_LOCAL_HOUSING_LAND_FLAGS);
         estate.owner_content_id = Some(100);
 
         let mut database = WorldDatabase::new_at(":memory:");
@@ -6044,11 +6044,11 @@ mod tests {
 
     #[test]
     fn non_owner_occupied_placard_selection_is_display_only_and_preserves_exit_target() {
-        let mut owned_estate = ward_estate(5, 0, TEST_HOUSING_LAND_FLAGS);
+        let mut owned_estate = ward_estate(5, 0, DEFAULT_LOCAL_HOUSING_LAND_FLAGS);
         owned_estate.owner_content_id = Some(100);
         owned_estate.land_ident = 55;
 
-        let mut browsed_estate = ward_estate(6, 0, TEST_HOUSING_LAND_FLAGS);
+        let mut browsed_estate = ward_estate(6, 0, DEFAULT_LOCAL_HOUSING_LAND_FLAGS);
         browsed_estate.owner_content_id = Some(200);
         browsed_estate.land_ident = 66;
 
@@ -6067,7 +6067,7 @@ mod tests {
 
     #[test]
     fn owner_occupied_placard_selection_promotes_authoritative_context() {
-        let mut estate = ward_estate(6, 0, TEST_HOUSING_LAND_FLAGS);
+        let mut estate = ward_estate(6, 0, DEFAULT_LOCAL_HOUSING_LAND_FLAGS);
         estate.owner_content_id = Some(100);
         estate.land_ident = 66;
 
@@ -6086,13 +6086,13 @@ mod tests {
     #[test]
     fn outdoor_init_does_not_promote_default_context_to_authoritative_edit_context() {
         let mut estate = ward_estate(
-            TEST_HOUSING_PLOT_INDEX as i32,
-            TEST_HOUSING_DIVISION as i32,
-            TEST_HOUSING_LAND_FLAGS,
+            DEFAULT_LOCAL_HOUSING_PLOT_INDEX as i32,
+            DEFAULT_LOCAL_HOUSING_DIVISION as i32,
+            DEFAULT_LOCAL_HOUSING_LAND_FLAGS,
         );
         estate.territory_type_id = 340;
         estate.world_id = 21;
-        estate.ward_index = TEST_HOUSING_WARD_INDEX as i32;
+        estate.ward_index = DEFAULT_LOCAL_HOUSING_WARD_INDEX as i32;
         estate.owner_content_id = Some(100);
 
         let mut database = WorldDatabase::new_at(":memory:");
@@ -6100,15 +6100,15 @@ mod tests {
 
         let display_context = ActiveHousingWardContext {
             territory_type_id: 340,
-            ward_index: TEST_HOUSING_WARD_INDEX,
-            division: TEST_HOUSING_DIVISION,
+            ward_index: DEFAULT_LOCAL_HOUSING_WARD_INDEX,
+            division: DEFAULT_LOCAL_HOUSING_DIVISION,
         };
         let active_estate = active_housing_estate(&estate, false);
         let authoritative_context = outdoor_init_authoritative_context(None, display_context, 340);
 
         assert!(
             authoritative_context.is_none(),
-            "outdoor init must not turn a default TEST context into edit authority"
+            "outdoor init must not turn a default local context into edit authority"
         );
         assert!(
             resolve_active_housing_estate_for_outdoor_owner_gate(
@@ -6126,7 +6126,7 @@ mod tests {
                 &mut database,
                 authoritative_context,
                 21,
-                TEST_HOUSING_PLOT_INDEX,
+                DEFAULT_LOCAL_HOUSING_PLOT_INDEX,
                 100,
             )
             .is_none(),
@@ -6152,7 +6152,7 @@ mod tests {
                 &mut database,
                 explicit_context,
                 21,
-                TEST_HOUSING_PLOT_INDEX,
+                DEFAULT_LOCAL_HOUSING_PLOT_INDEX,
                 100,
             )
             .is_some(),
@@ -6174,8 +6174,8 @@ mod tests {
         };
         let default_context = ActiveHousingWardContext {
             territory_type_id: 340,
-            ward_index: TEST_HOUSING_WARD_INDEX,
-            division: TEST_HOUSING_DIVISION,
+            ward_index: DEFAULT_LOCAL_HOUSING_WARD_INDEX,
+            division: DEFAULT_LOCAL_HOUSING_DIVISION,
         };
 
         assert_eq!(
@@ -6199,8 +6199,8 @@ mod tests {
         };
         let default_context = ActiveHousingWardContext {
             territory_type_id: 340,
-            ward_index: TEST_HOUSING_WARD_INDEX,
-            division: TEST_HOUSING_DIVISION,
+            ward_index: DEFAULT_LOCAL_HOUSING_WARD_INDEX,
+            division: DEFAULT_LOCAL_HOUSING_DIVISION,
         };
 
         assert_eq!(
@@ -6216,13 +6216,13 @@ mod tests {
     #[test]
     fn outdoor_init_display_ignores_bootstrap_active_estate_context_without_authority() {
         let mut estate = ward_estate(
-            TEST_HOUSING_PLOT_INDEX as i32,
-            TEST_HOUSING_DIVISION as i32,
-            TEST_HOUSING_LAND_FLAGS,
+            DEFAULT_LOCAL_HOUSING_PLOT_INDEX as i32,
+            DEFAULT_LOCAL_HOUSING_DIVISION as i32,
+            DEFAULT_LOCAL_HOUSING_LAND_FLAGS,
         );
         estate.territory_type_id = 340;
         estate.world_id = 21;
-        estate.ward_index = TEST_HOUSING_WARD_INDEX as i32;
+        estate.ward_index = DEFAULT_LOCAL_HOUSING_WARD_INDEX as i32;
         estate.owner_content_id = Some(100);
 
         let mut database = WorldDatabase::new_at(":memory:");
@@ -6232,12 +6232,12 @@ mod tests {
         let display_context = ActiveHousingWardContext {
             territory_type_id: 340,
             ward_index: 9,
-            division: TEST_HOUSING_DIVISION,
+            division: DEFAULT_LOCAL_HOUSING_DIVISION,
         };
         let default_context = ActiveHousingWardContext {
             territory_type_id: 340,
-            ward_index: TEST_HOUSING_WARD_INDEX,
-            division: TEST_HOUSING_DIVISION,
+            ward_index: DEFAULT_LOCAL_HOUSING_WARD_INDEX,
+            division: DEFAULT_LOCAL_HOUSING_DIVISION,
         };
 
         assert_eq!(
@@ -6248,7 +6248,7 @@ mod tests {
                 340,
             ),
             bootstrap_context,
-            "the old call shape would trust the bootstrap TEST estate context"
+            "the old call shape would trust the bootstrap local estate context"
         );
 
         let active_context = outdoor_init_active_context(None, Some(bootstrap_context));
@@ -6287,7 +6287,7 @@ mod tests {
                 &mut database,
                 authoritative_context,
                 21,
-                TEST_HOUSING_PLOT_INDEX,
+                DEFAULT_LOCAL_HOUSING_PLOT_INDEX,
                 100,
             )
             .is_none(),
@@ -6304,8 +6304,8 @@ mod tests {
         };
         let display_context = ActiveHousingWardContext {
             territory_type_id: 341,
-            ward_index: TEST_HOUSING_WARD_INDEX,
-            division: TEST_HOUSING_DIVISION,
+            ward_index: DEFAULT_LOCAL_HOUSING_WARD_INDEX,
+            division: DEFAULT_LOCAL_HOUSING_DIVISION,
         };
 
         assert!(
@@ -6326,8 +6326,8 @@ mod tests {
 
     #[test]
     fn outdoor_edit_rejects_stale_context() {
-        let mut estate = ward_estate(5, 1, TEST_HOUSING_LAND_FLAGS);
-        estate.ward_index = TEST_HOUSING_WARD_INDEX as i32;
+        let mut estate = ward_estate(5, 1, DEFAULT_LOCAL_HOUSING_LAND_FLAGS);
+        estate.ward_index = DEFAULT_LOCAL_HOUSING_WARD_INDEX as i32;
         estate.owner_content_id = Some(100);
 
         let mut database = WorldDatabase::new_at(":memory:");
@@ -6645,7 +6645,7 @@ mod tests {
             &mut database,
             None,
             None,
-            TEST_HOUSING_INDOOR_TERRITORY_TYPE_ID_LARGE,
+            DEFAULT_LOCAL_HOUSING_INDOOR_TERRITORY_TYPE_ID_LARGE,
             21,
             100,
         )
@@ -6722,8 +6722,8 @@ mod tests {
     #[test]
     fn selected_or_owned_housing_estate_prefers_active_parameterized_estate() {
         let mut database = WorldDatabase::new_at(":memory:");
-        let default_estate = database.ensure_test_estate(100, "Tester", 67);
-        let selected_estate = database.ensure_test_estate_with_spec(HousingEstateSpec {
+        let default_estate = database.ensure_local_estate(100, "Tester", 67);
+        let selected_estate = database.ensure_local_estate_with_spec(HousingEstateSpec {
             owner_content_id: 100,
             owner_name: "Tester FC".to_string(),
             world_id: 67,
@@ -6755,10 +6755,10 @@ mod tests {
     }
 
     #[test]
-    fn selected_or_default_test_estate_enters_active_parameterized_estate() {
+    fn selected_or_default_local_estate_enters_active_parameterized_estate() {
         let mut database = WorldDatabase::new_at(":memory:");
-        let default_estate = database.ensure_test_estate(100, "Tester", 67);
-        let selected_estate = database.ensure_test_estate_with_spec(HousingEstateSpec {
+        let default_estate = database.ensure_local_estate(100, "Tester", 67);
+        let selected_estate = database.ensure_local_estate_with_spec(HousingEstateSpec {
             owner_content_id: 100,
             owner_name: "Tester FC".to_string(),
             world_id: 67,
@@ -6771,8 +6771,13 @@ mod tests {
         });
         let active_estate = active_housing_estate(&selected_estate, false);
 
-        let resolved =
-            selected_or_default_test_estate(&mut database, Some(&active_estate), 100, "Tester", 67);
+        let resolved = selected_or_default_local_estate(
+            &mut database,
+            Some(&active_estate),
+            100,
+            "Tester",
+            67,
+        );
 
         assert_eq!(resolved.land_ident, selected_estate.land_ident);
         assert_ne!(resolved.land_ident, default_estate.land_ident);
@@ -6782,8 +6787,8 @@ mod tests {
     #[test]
     fn selected_or_owned_housing_estate_ignores_foreign_active_estate_and_returns_owned_estate() {
         let mut database = WorldDatabase::new_at(":memory:");
-        let owned_estate = database.ensure_test_estate(100, "Tester", 67);
-        let foreign_estate = database.ensure_test_estate_with_spec(HousingEstateSpec {
+        let owned_estate = database.ensure_local_estate(100, "Tester", 67);
+        let foreign_estate = database.ensure_local_estate_with_spec(HousingEstateSpec {
             owner_content_id: 200,
             owner_name: "Other Owner".to_string(),
             world_id: 67,
@@ -7025,9 +7030,9 @@ mod tests {
     }
 
     #[test]
-    fn selected_or_default_test_estate_creates_default_when_only_active_estate_is_foreign() {
+    fn selected_or_default_local_estate_creates_default_when_only_active_estate_is_foreign() {
         let mut database = WorldDatabase::new_at(":memory:");
-        let foreign_estate = database.ensure_test_estate_with_spec(HousingEstateSpec {
+        let foreign_estate = database.ensure_local_estate_with_spec(HousingEstateSpec {
             owner_content_id: 200,
             owner_name: "Other Owner".to_string(),
             world_id: 67,
@@ -7040,8 +7045,13 @@ mod tests {
         });
         let active_estate = active_housing_estate(&foreign_estate, false);
 
-        let resolved =
-            selected_or_default_test_estate(&mut database, Some(&active_estate), 100, "Tester", 67);
+        let resolved = selected_or_default_local_estate(
+            &mut database,
+            Some(&active_estate),
+            100,
+            "Tester",
+            67,
+        );
 
         assert_ne!(resolved.land_ident, foreign_estate.land_ident);
         assert_eq!(resolved.owner_content_id, Some(100));
@@ -7052,8 +7062,8 @@ mod tests {
     #[test]
     fn mutator_selection_updates_active_estate_when_multiple_estates_exist() {
         let mut database = WorldDatabase::new_at(":memory:");
-        let default_estate = database.ensure_test_estate(100, "Tester", 67);
-        let selected_estate = database.ensure_test_estate_with_spec(HousingEstateSpec {
+        let default_estate = database.ensure_local_estate(100, "Tester", 67);
+        let selected_estate = database.ensure_local_estate_with_spec(HousingEstateSpec {
             owner_content_id: 100,
             owner_name: "Tester FC".to_string(),
             world_id: 67,
@@ -7087,8 +7097,8 @@ mod tests {
     #[test]
     fn mutator_selection_ignores_foreign_active_estate_when_updating_owned_estate() {
         let mut database = WorldDatabase::new_at(":memory:");
-        let owned_estate = database.ensure_test_estate(100, "Tester", 67);
-        let foreign_estate = database.ensure_test_estate_with_spec(HousingEstateSpec {
+        let owned_estate = database.ensure_local_estate(100, "Tester", 67);
+        let foreign_estate = database.ensure_local_estate_with_spec(HousingEstateSpec {
             owner_content_id: 200,
             owner_name: "Other Owner".to_string(),
             world_id: 67,
@@ -7120,7 +7130,7 @@ mod tests {
     }
 
     #[test]
-    fn test_house_simple_interior_territory_matches_plot_size() {
+    fn local_house_simple_interior_territory_matches_plot_size() {
         assert_eq!(
             simple_housing_indoor_territory_type_id(PlotSize::Small),
             1249
@@ -7153,7 +7163,7 @@ mod tests {
 
     #[test]
     fn default_house_entry_territory_uses_original_district_when_no_pattern_is_saved() {
-        let estate = ward_estate(5, 0, TEST_HOUSING_LAND_FLAGS);
+        let estate = ward_estate(5, 0, DEFAULT_LOCAL_HOUSING_LAND_FLAGS);
 
         assert_eq!(
             housing_default_indoor_entry_territory_type_id_for_estate(&estate),
@@ -7163,7 +7173,7 @@ mod tests {
 
     #[test]
     fn persisted_simple_interior_pattern_row_keeps_simple_territory() {
-        let mut estate = ward_estate(5, 0, TEST_HOUSING_LAND_FLAGS);
+        let mut estate = ward_estate(5, 0, DEFAULT_LOCAL_HOUSING_LAND_FLAGS);
         estate.plot_size = PlotSize::Large as i32;
         estate.interior_json = update_interior_json_renovation_row_id("{}", 18)
             .expect("interior pattern row should serialize");

@@ -16,7 +16,7 @@ These special debug commands start with `!` and are custom to Kawari.
 | `!festival <id1> <id2> <id3> <id4>` | Sets the festival in the current zone. Multiple festivals can be set together to create interesting effects. |
 | `!finishevent` | Forcefully finishes the current event, useful if the script has an error and you're stuck talking to something. |
 | `!gate` | Spawns a non-functional debug GATE. |
-| `!housing [subcommand]` | Creates or refreshes the default local test estate with no arguments. See [Housing command](#housing-command) for all forms. |
+| `!housing [subcommand]` | Creates or refreshes the default local debug estate with no arguments. See [Housing command](#housing-command) for all forms. |
 | `!item <name>` | Gives you an item matching by name. |
 | `!inspect` | Prints info about the player. |
 | `!itemlevel <level>` | Temporarily set your own item level. |
@@ -53,7 +53,7 @@ These special debug commands start with `!` and are custom to Kawari.
 
 Supported forms:
 
-- `!housing testhouse [personal|fc] [small|medium|large] [territory_id] [ward] [plot]` creates or refreshes a local test estate.
+- `!housing testhouse [personal|fc] [small|medium|large] [territory_id] [ward] [plot]` creates or refreshes a local debug estate.
 - `!housing apartment [room]` creates or refreshes a local apartment room.
 - `!housing enter [apartment [room]]`, `!housing exit`, `!housing reload`, and `!housing info` enter, leave, reload, or print the active housing context.
 - `!housing reset furniture|estate|all`, `!housing name <text>`, `!housing greeting <text>`, and `!housing light <0-5>` queue estate updates.
@@ -65,4 +65,4 @@ Supported forms:
 - `!housing preset repeat [--reload]` repeats the previous ReMakePlace preset apply.
 - `!housing preset check [all|interior|indoor|exterior|outdoor] <path|latest>` validates a ReMakePlace preset without applying it.
 - `!housing preset check repeat` validates the previous ReMakePlace preset without applying it.
-- `!housing givekit indoor|outdoor|npc` grants housing test kits.
+- `!housing givekit indoor|outdoor|npc` grants housing debug kits.

@@ -13,6 +13,6 @@ function onReturn(scene, results, player)
     player:finish_event()
 
     if results[1] == ENTER_HOUSE then
-        player:enter_test_house()
+        player:enter_local_house()
     end
 end

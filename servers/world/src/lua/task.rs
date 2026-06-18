@@ -149,11 +149,11 @@ pub enum LuaTask {
         division: u8,
         plot_index: u8,
     },
-    EnsureTestApartment {
+    EnsureLocalApartment {
         room_number: u16,
     },
-    EnsureTestHouse {},
-    EnsureTestHouseWithOptions {
+    EnsureLocalHouse {},
+    EnsureLocalHouseWithOptions {
         kind: HousingEstateKind,
         size: PlotSize,
         territory_type_id: u16,
@@ -208,11 +208,11 @@ pub enum LuaTask {
     GiveHousingKit {
         kit: HousingKit,
     },
-    EnterTestApartment {
+    EnterLocalApartment {
         room_number: u16,
     },
-    EnterTestHouse {},
-    ExitTestHouse {},
+    EnterLocalHouse {},
+    ExitLocalHouse {},
     ReloadHousing {},
     UnlockContent {
         id: u16,

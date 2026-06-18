@@ -244,20 +244,20 @@ impl LuaPlayer {
         });
     }
 
-    fn ensure_test_apartment(&mut self, room_number: u16) {
+    fn ensure_local_apartment(&mut self, room_number: u16) {
         if !valid_apartment_room_number(room_number) {
             return;
         }
 
         self.queued_tasks
-            .push(LuaTask::EnsureTestApartment { room_number });
+            .push(LuaTask::EnsureLocalApartment { room_number });
     }
 
-    fn ensure_test_house(&mut self) {
-        self.queued_tasks.push(LuaTask::EnsureTestHouse {});
+    fn ensure_local_house(&mut self) {
+        self.queued_tasks.push(LuaTask::EnsureLocalHouse {});
     }
 
-    fn ensure_test_house_with_options(
+    fn ensure_local_house_with_options(
         &mut self,
         kind: HousingEstateKind,
         size: PlotSize,
@@ -266,14 +266,15 @@ impl LuaPlayer {
         division: u8,
         plot_index: u8,
     ) {
-        self.queued_tasks.push(LuaTask::EnsureTestHouseWithOptions {
-            kind,
-            size,
-            territory_type_id,
-            ward_index,
-            division,
-            plot_index,
-        });
+        self.queued_tasks
+            .push(LuaTask::EnsureLocalHouseWithOptions {
+                kind,
+                size,
+                territory_type_id,
+                ward_index,
+                division,
+                plot_index,
+            });
     }
 
     fn reset_housing(&mut self, mode: HousingResetMode) {
@@ -346,21 +347,21 @@ impl LuaPlayer {
         self.queued_tasks.push(LuaTask::GiveHousingKit { kit });
     }
 
-    fn enter_test_apartment(&mut self, room_number: u16) {
+    fn enter_local_apartment(&mut self, room_number: u16) {
         if !valid_apartment_room_number(room_number) {
             return;
         }
 
         self.queued_tasks
-            .push(LuaTask::EnterTestApartment { room_number });
+            .push(LuaTask::EnterLocalApartment { room_number });
     }
 
-    fn enter_test_house(&mut self) {
-        self.queued_tasks.push(LuaTask::EnterTestHouse {});
+    fn enter_local_house(&mut self) {
+        self.queued_tasks.push(LuaTask::EnterLocalHouse {});
     }
 
-    fn exit_test_house(&mut self) {
-        self.queued_tasks.push(LuaTask::ExitTestHouse {});
+    fn exit_local_house(&mut self) {
+        self.queued_tasks.push(LuaTask::ExitLocalHouse {});
     }
 
     fn reload_housing(&mut self) {
@@ -912,16 +913,16 @@ impl UserData for LuaPlayer {
                 Ok(table)
             },
         );
-        methods.add_method_mut("ensure_test_house", |_, this, _: ()| {
-            this.ensure_test_house();
+        methods.add_method_mut("ensure_local_house", |_, this, _: ()| {
+            this.ensure_local_house();
             Ok(())
         });
-        methods.add_method_mut("ensure_test_apartment", |_, this, room_number: u16| {
-            this.ensure_test_apartment(room_number);
+        methods.add_method_mut("ensure_local_apartment", |_, this, room_number: u16| {
+            this.ensure_local_apartment(room_number);
             Ok(())
         });
         methods.add_method_mut(
-            "ensure_test_house_with_options",
+            "ensure_local_house_with_options",
             |_,
              this,
              (kind, size, territory_type_id, ward_index, division, plot_index): (
@@ -932,7 +933,7 @@ impl UserData for LuaPlayer {
                 u8,
                 u8,
             )| {
-                this.ensure_test_house_with_options(
+                this.ensure_local_house_with_options(
                     parse_housing_estate_kind(&kind)?,
                     parse_housing_plot_size(&size)?,
                     territory_type_id,
@@ -1021,16 +1022,16 @@ impl UserData for LuaPlayer {
             this.give_housing_kit(parse_housing_kit(&kit)?);
             Ok(())
         });
-        methods.add_method_mut("enter_test_house", |_, this, _: ()| {
-            this.enter_test_house();
+        methods.add_method_mut("enter_local_house", |_, this, _: ()| {
+            this.enter_local_house();
             Ok(())
         });
-        methods.add_method_mut("enter_test_apartment", |_, this, room_number: u16| {
-            this.enter_test_apartment(room_number);
+        methods.add_method_mut("enter_local_apartment", |_, this, room_number: u16| {
+            this.enter_local_apartment(room_number);
             Ok(())
         });
-        methods.add_method_mut("exit_test_house", |_, this, _: ()| {
-            this.exit_test_house();
+        methods.add_method_mut("exit_local_house", |_, this, _: ()| {
+            this.exit_local_house();
             Ok(())
         });
         methods.add_method_mut("reload_housing", |_, this, _: ()| {
@@ -1605,7 +1606,7 @@ mod tests {
         let player = player.borrow::<LuaPlayer>().unwrap();
         match player.queued_tasks.as_slice() {
             [
-                LuaTask::EnsureTestHouseWithOptions {
+                LuaTask::EnsureLocalHouseWithOptions {
                     kind,
                     size,
                     territory_type_id,
@@ -1659,7 +1660,7 @@ mod tests {
         let player = player.borrow::<LuaPlayer>().unwrap();
         match player.queued_tasks.as_slice() {
             [
-                LuaTask::EnsureTestHouseWithOptions {
+                LuaTask::EnsureLocalHouseWithOptions {
                     kind,
                     size,
                     territory_type_id,
@@ -1984,10 +1985,10 @@ mod tests {
     }
 
     #[test]
-    fn ensure_test_house_with_options_queues_parameterized_task() {
+    fn ensure_local_house_with_options_queues_parameterized_task() {
         let mut player = LuaPlayer::default();
 
-        player.ensure_test_house_with_options(
+        player.ensure_local_house_with_options(
             HousingEstateKind::FreeCompany,
             PlotSize::Medium,
             341,
@@ -1998,7 +1999,7 @@ mod tests {
 
         match player.queued_tasks.as_slice() {
             [
-                LuaTask::EnsureTestHouseWithOptions {
+                LuaTask::EnsureLocalHouseWithOptions {
                     kind,
                     size,
                     territory_type_id,
@@ -2022,13 +2023,13 @@ mod tests {
     fn apartment_methods_queue_room_tasks() {
         let mut player = LuaPlayer::default();
 
-        player.ensure_test_apartment(1);
-        player.enter_test_apartment(1);
+        player.ensure_local_apartment(1);
+        player.enter_local_apartment(1);
 
         match player.queued_tasks.as_slice() {
             [
-                LuaTask::EnsureTestApartment { room_number },
-                LuaTask::EnterTestApartment {
+                LuaTask::EnsureLocalApartment { room_number },
+                LuaTask::EnterLocalApartment {
                     room_number: enter_room_number,
                 },
             ] => {
@@ -2273,8 +2274,8 @@ mod tests {
         let player = player.borrow::<LuaPlayer>().unwrap();
         match player.queued_tasks.as_slice() {
             [
-                LuaTask::EnsureTestApartment { room_number },
-                LuaTask::EnterTestApartment {
+                LuaTask::EnsureLocalApartment { room_number },
+                LuaTask::EnterLocalApartment {
                     room_number: enter_room_number,
                 },
             ] => {

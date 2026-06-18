@@ -15,12 +15,12 @@ use super::{
     unixepoch,
 };
 
-pub const TEST_HOUSING_TERRITORY_TYPE_ID: u16 = 340;
-pub const TEST_HOUSING_WARD_INDEX: u8 = 0;
-pub const TEST_HOUSING_DIVISION: u8 = 0;
-pub const TEST_HOUSING_PLOT_INDEX: u8 = 5;
-pub const TEST_HOUSING_PLOT_SIZE: PlotSize = PlotSize::Large;
-pub const TEST_HOUSING_LAND_FLAGS: i32 = 0x0B;
+pub const DEFAULT_LOCAL_HOUSING_TERRITORY_TYPE_ID: u16 = 340;
+pub const DEFAULT_LOCAL_HOUSING_WARD_INDEX: u8 = 0;
+pub const DEFAULT_LOCAL_HOUSING_DIVISION: u8 = 0;
+pub const DEFAULT_LOCAL_HOUSING_PLOT_INDEX: u8 = 5;
+pub const DEFAULT_LOCAL_HOUSING_PLOT_SIZE: PlotSize = PlotSize::Large;
+pub const DEFAULT_LOCAL_HOUSING_LAND_FLAGS: i32 = 0x0B;
 pub const MAX_APARTMENT_ROOM_NUMBER: u16 = 1023;
 const HOUSING_ESTATE_NAME_MAX_PAYLOAD_BYTES: usize = 20;
 const HOUSING_GREETING_MAX_PAYLOAD_BYTES: usize = 192;
@@ -115,31 +115,31 @@ fn serialize_housing_estate_detail_ipc_json(
 }
 
 impl WorldDatabase {
-    pub fn ensure_test_estate(
+    pub fn ensure_local_estate(
         &mut self,
         for_owner_content_id: u64,
         for_owner_name: &str,
         for_world_id: u16,
     ) -> HousingEstate {
-        self.ensure_test_estate_with_spec(HousingEstateSpec {
+        self.ensure_local_estate_with_spec(HousingEstateSpec {
             owner_content_id: for_owner_content_id,
             owner_name: for_owner_name.to_string(),
             world_id: for_world_id,
-            territory_type_id: TEST_HOUSING_TERRITORY_TYPE_ID,
-            ward_index: TEST_HOUSING_WARD_INDEX,
-            division: TEST_HOUSING_DIVISION,
-            plot_index: TEST_HOUSING_PLOT_INDEX,
-            plot_size: TEST_HOUSING_PLOT_SIZE,
+            territory_type_id: DEFAULT_LOCAL_HOUSING_TERRITORY_TYPE_ID,
+            ward_index: DEFAULT_LOCAL_HOUSING_WARD_INDEX,
+            division: DEFAULT_LOCAL_HOUSING_DIVISION,
+            plot_index: DEFAULT_LOCAL_HOUSING_PLOT_INDEX,
+            plot_size: DEFAULT_LOCAL_HOUSING_PLOT_SIZE,
             free_company: false,
         })
     }
 
-    pub fn ensure_test_estate_with_spec(&mut self, spec: HousingEstateSpec) -> HousingEstate {
+    pub fn ensure_local_estate_with_spec(&mut self, spec: HousingEstateSpec) -> HousingEstate {
         let now = self.database_time();
-        let house_id = test_estate_house_id(&spec);
+        let house_id = local_estate_house_id(&spec);
         let land_ident = house_id.to_u64() as i64;
 
-        let flags = TEST_HOUSING_LAND_FLAGS | if spec.free_company { 0x10 } else { 0 };
+        let flags = DEFAULT_LOCAL_HOUSING_LAND_FLAGS | if spec.free_company { 0x10 } else { 0 };
         let estate = HousingEstate {
             land_ident,
             house_id: house_id.to_u64() as i64,
@@ -155,11 +155,11 @@ impl WorldDatabase {
             plot_size: spec.plot_size as i32,
             flags,
             estate_name: truncate_utf8_to_max_bytes(
-                &format!("{}'s Test Estate", spec.owner_name),
+                &format!("{}'s Local Estate", spec.owner_name),
                 HOUSING_ESTATE_NAME_MAX_PAYLOAD_BYTES,
             ),
             greeting: truncate_utf8_to_max_bytes(
-                "A local Kawari test estate.",
+                "A local Kawari debug estate.",
                 HOUSING_GREETING_MAX_PAYLOAD_BYTES,
             ),
             exterior_json: "{}".to_string(),
@@ -236,7 +236,7 @@ impl WorldDatabase {
             .unwrap()
     }
 
-    pub fn ensure_test_apartment(
+    pub fn ensure_local_apartment(
         &mut self,
         for_owner_content_id: u64,
         for_owner_name: &str,
@@ -251,7 +251,7 @@ impl WorldDatabase {
         }
 
         let now = self.database_time();
-        let house_id = test_apartment_house_id(
+        let house_id = local_apartment_house_id(
             territory_type_id,
             for_world_id,
             ward_index,
@@ -272,13 +272,13 @@ impl WorldDatabase {
             owner_content_id: Some(for_owner_content_id as i64),
             owner_name: for_owner_name.to_string(),
             plot_size: PlotSize::Small as i32,
-            flags: TEST_HOUSING_LAND_FLAGS,
+            flags: DEFAULT_LOCAL_HOUSING_LAND_FLAGS,
             estate_name: truncate_utf8_to_max_bytes(
                 &format!("{for_owner_name}'s Apt. {room_number}"),
                 HOUSING_ESTATE_NAME_MAX_PAYLOAD_BYTES,
             ),
             greeting: truncate_utf8_to_max_bytes(
-                "A local Kawari test apartment.",
+                "A local Kawari debug apartment.",
                 HOUSING_GREETING_MAX_PAYLOAD_BYTES,
             ),
             exterior_json: "{}".to_string(),
@@ -1138,7 +1138,7 @@ fn housing_container_kind(container_type: i32) -> &'static str {
     }
 }
 
-fn test_estate_house_id(spec: &HousingEstateSpec) -> HouseId {
+fn local_estate_house_id(spec: &HousingEstateSpec) -> HouseId {
     HouseId {
         unit: HouseUnit {
             apartment_division_plot_index: spec.plot_index + spec.division * 30,
@@ -1152,7 +1152,7 @@ fn test_estate_house_id(spec: &HousingEstateSpec) -> HouseId {
     }
 }
 
-fn test_apartment_house_id(
+fn local_apartment_house_id(
     territory_type_id: u16,
     world_id: u16,
     ward_index: u8,
@@ -1203,36 +1203,39 @@ mod tests {
     }
 
     #[test]
-    fn ensure_test_estate_creates_one_estate() {
+    fn ensure_local_estate_creates_one_estate() {
         let mut db = test_db();
 
-        let estate = db.ensure_test_estate(100, "Tester", 67);
+        let estate = db.ensure_local_estate(100, "Tester", 67);
 
         assert_eq!(estate.owner_content_id, Some(100));
         assert_eq!(estate.owner_name, "Tester");
-        assert_eq!(estate.territory_type_id, 340);
-        assert_eq!(estate.ward_index, 0);
-        assert_eq!(estate.division, 0);
-        assert_eq!(estate.plot_index, 5);
-        assert_eq!(estate.plot_size, PlotSize::Large as i32);
-        assert_eq!(estate.flags, TEST_HOUSING_LAND_FLAGS);
+        assert_eq!(
+            estate.territory_type_id,
+            DEFAULT_LOCAL_HOUSING_TERRITORY_TYPE_ID as i32
+        );
+        assert_eq!(estate.ward_index, DEFAULT_LOCAL_HOUSING_WARD_INDEX as i32);
+        assert_eq!(estate.division, DEFAULT_LOCAL_HOUSING_DIVISION as i32);
+        assert_eq!(estate.plot_index, DEFAULT_LOCAL_HOUSING_PLOT_INDEX as i32);
+        assert_eq!(estate.plot_size, DEFAULT_LOCAL_HOUSING_PLOT_SIZE as i32);
+        assert_eq!(estate.flags, DEFAULT_LOCAL_HOUSING_LAND_FLAGS);
         assert_eq!(estate.house_id, estate.land_ident);
     }
 
     #[test]
-    fn test_estate_land_flags_mark_personal_built_house_without_fc() {
-        assert_eq!(TEST_HOUSING_LAND_FLAGS & 0x01, 0x01);
-        assert_eq!(TEST_HOUSING_LAND_FLAGS & 0x02, 0x02);
-        assert_eq!(TEST_HOUSING_LAND_FLAGS & 0x08, 0x08);
-        assert_eq!(TEST_HOUSING_LAND_FLAGS & 0x10, 0x00);
-        assert_eq!(TEST_HOUSING_LAND_FLAGS, 0x0B);
+    fn local_estate_land_flags_mark_personal_built_house_without_fc() {
+        assert_eq!(DEFAULT_LOCAL_HOUSING_LAND_FLAGS & 0x01, 0x01);
+        assert_eq!(DEFAULT_LOCAL_HOUSING_LAND_FLAGS & 0x02, 0x02);
+        assert_eq!(DEFAULT_LOCAL_HOUSING_LAND_FLAGS & 0x08, 0x08);
+        assert_eq!(DEFAULT_LOCAL_HOUSING_LAND_FLAGS & 0x10, 0x00);
+        assert_eq!(DEFAULT_LOCAL_HOUSING_LAND_FLAGS, 0x0B);
     }
 
     #[test]
-    fn ensure_test_estate_accepts_fc_large_plot_options() {
+    fn ensure_local_estate_accepts_fc_large_plot_options() {
         let mut db = test_db();
 
-        let estate = db.ensure_test_estate_with_spec(HousingEstateSpec {
+        let estate = db.ensure_local_estate_with_spec(HousingEstateSpec {
             owner_content_id: 100,
             owner_name: "Tester FC".to_string(),
             world_id: 67,
@@ -1254,7 +1257,7 @@ mod tests {
         assert_eq!(estate.division, 1);
         assert_eq!(estate.plot_index, 12);
         assert_eq!(estate.plot_size, PlotSize::Large as i32);
-        assert_eq!(estate.flags, TEST_HOUSING_LAND_FLAGS | 0x10);
+        assert_eq!(estate.flags, DEFAULT_LOCAL_HOUSING_LAND_FLAGS | 0x10);
         assert_eq!(estate.house_id, estate.land_ident);
         assert_eq!(house_id.territory_type_id, 341);
         assert_eq!(house_id.world_id, 67);
@@ -1264,22 +1267,22 @@ mod tests {
     }
 
     #[test]
-    fn ensure_test_estate_is_idempotent() {
+    fn ensure_local_estate_is_idempotent() {
         let mut db = test_db();
 
-        let first = db.ensure_test_estate(100, "Tester", 67);
-        let second = db.ensure_test_estate(100, "Tester Prime", 67);
+        let first = db.ensure_local_estate(100, "Tester", 67);
+        let second = db.ensure_local_estate(100, "Tester Prime", 67);
         let estates = db.owned_housing_estates(100);
 
         assert_eq!(first.land_ident, second.land_ident);
         assert_eq!(estates.len(), 1);
         assert_eq!(estates[0].owner_name, "Tester Prime");
         assert_eq!(estates[0].plot_size, PlotSize::Large as i32);
-        assert_eq!(estates[0].flags, TEST_HOUSING_LAND_FLAGS);
+        assert_eq!(estates[0].flags, DEFAULT_LOCAL_HOUSING_LAND_FLAGS);
     }
 
     #[test]
-    fn ensure_test_estate_replaces_previous_test_plot() {
+    fn ensure_local_estate_replaces_previous_local_plot() {
         let mut db = test_db();
 
         let old_house_id = HouseId {
@@ -1288,19 +1291,19 @@ mod tests {
                 apartment_flag: false,
             },
             unk1: 0,
-            ward_index: TEST_HOUSING_WARD_INDEX,
+            ward_index: DEFAULT_LOCAL_HOUSING_WARD_INDEX,
             room_number: 0,
-            territory_type_id: TEST_HOUSING_TERRITORY_TYPE_ID,
+            territory_type_id: DEFAULT_LOCAL_HOUSING_TERRITORY_TYPE_ID,
             world_id: 67,
         };
         diesel::insert_into(housing_estates::table)
             .values(HousingEstate {
                 land_ident: old_house_id.to_u64() as i64,
                 house_id: old_house_id.to_u64() as i64,
-                territory_type_id: TEST_HOUSING_TERRITORY_TYPE_ID as i32,
+                territory_type_id: DEFAULT_LOCAL_HOUSING_TERRITORY_TYPE_ID as i32,
                 world_id: 67,
-                ward_index: TEST_HOUSING_WARD_INDEX as i32,
-                division: TEST_HOUSING_DIVISION as i32,
+                ward_index: DEFAULT_LOCAL_HOUSING_WARD_INDEX as i32,
+                division: DEFAULT_LOCAL_HOUSING_DIVISION as i32,
                 plot_index: 4,
                 owner_content_id: Some(100),
                 owner_name: "Tester".to_string(),
@@ -1310,44 +1313,47 @@ mod tests {
             .execute(&mut db.connection)
             .unwrap();
 
-        let estate = db.ensure_test_estate(100, "Tester", 67);
+        let estate = db.ensure_local_estate(100, "Tester", 67);
         let estates = db.owned_housing_estates(100);
 
-        assert_eq!(estate.plot_index, TEST_HOUSING_PLOT_INDEX as i32);
+        assert_eq!(estate.plot_index, DEFAULT_LOCAL_HOUSING_PLOT_INDEX as i32);
         assert_eq!(estates.len(), 1);
-        assert_eq!(estates[0].plot_index, TEST_HOUSING_PLOT_INDEX as i32);
+        assert_eq!(
+            estates[0].plot_index,
+            DEFAULT_LOCAL_HOUSING_PLOT_INDEX as i32
+        );
     }
 
-    fn test_house_id(plot_index: u8) -> HouseId {
+    fn local_house_id(plot_index: u8) -> HouseId {
         HouseId {
             unit: HouseUnit {
                 apartment_division_plot_index: plot_index,
                 apartment_flag: false,
             },
             unk1: 0,
-            ward_index: TEST_HOUSING_WARD_INDEX,
+            ward_index: DEFAULT_LOCAL_HOUSING_WARD_INDEX,
             room_number: 0,
-            territory_type_id: TEST_HOUSING_TERRITORY_TYPE_ID,
+            territory_type_id: DEFAULT_LOCAL_HOUSING_TERRITORY_TYPE_ID,
             world_id: 67,
         }
     }
 
-    fn insert_stale_test_estate(
+    fn insert_stale_local_estate(
         db: &mut WorldDatabase,
         owner_content_id: u64,
         plot_index: u8,
     ) -> i64 {
-        let old_house_id = test_house_id(plot_index);
+        let old_house_id = local_house_id(plot_index);
         let old_land_ident = old_house_id.to_u64() as i64;
 
         diesel::insert_into(housing_estates::table)
             .values(HousingEstate {
                 land_ident: old_land_ident,
                 house_id: old_land_ident,
-                territory_type_id: TEST_HOUSING_TERRITORY_TYPE_ID as i32,
+                territory_type_id: DEFAULT_LOCAL_HOUSING_TERRITORY_TYPE_ID as i32,
                 world_id: 67,
-                ward_index: TEST_HOUSING_WARD_INDEX as i32,
-                division: TEST_HOUSING_DIVISION as i32,
+                ward_index: DEFAULT_LOCAL_HOUSING_WARD_INDEX as i32,
+                division: DEFAULT_LOCAL_HOUSING_DIVISION as i32,
                 plot_index: plot_index as i32,
                 owner_content_id: Some(owner_content_id as i64),
                 owner_name: "Tester".to_string(),
@@ -1361,7 +1367,7 @@ mod tests {
     }
 
     #[test]
-    fn ensure_test_estate_migrates_previous_test_plot_furniture() {
+    fn ensure_local_estate_migrates_previous_local_plot_furniture() {
         let mut db = test_db();
 
         let old_house_id = HouseId {
@@ -1370,9 +1376,9 @@ mod tests {
                 apartment_flag: false,
             },
             unk1: 0,
-            ward_index: TEST_HOUSING_WARD_INDEX,
+            ward_index: DEFAULT_LOCAL_HOUSING_WARD_INDEX,
             room_number: 0,
-            territory_type_id: TEST_HOUSING_TERRITORY_TYPE_ID,
+            territory_type_id: DEFAULT_LOCAL_HOUSING_TERRITORY_TYPE_ID,
             world_id: 67,
         };
         let old_land_ident = old_house_id.to_u64() as i64;
@@ -1381,10 +1387,10 @@ mod tests {
             .values(HousingEstate {
                 land_ident: old_land_ident,
                 house_id: old_land_ident,
-                territory_type_id: TEST_HOUSING_TERRITORY_TYPE_ID as i32,
+                territory_type_id: DEFAULT_LOCAL_HOUSING_TERRITORY_TYPE_ID as i32,
                 world_id: 67,
-                ward_index: TEST_HOUSING_WARD_INDEX as i32,
-                division: TEST_HOUSING_DIVISION as i32,
+                ward_index: DEFAULT_LOCAL_HOUSING_WARD_INDEX as i32,
+                division: DEFAULT_LOCAL_HOUSING_DIVISION as i32,
                 plot_index: 4,
                 owner_content_id: Some(100),
                 owner_name: "Tester".to_string(),
@@ -1413,7 +1419,7 @@ mod tests {
             ..Default::default()
         });
 
-        let estate = db.ensure_test_estate(100, "Tester", 67);
+        let estate = db.ensure_local_estate(100, "Tester", 67);
 
         assert!(db.list_housing_furniture(old_land_ident, true).is_empty());
         assert!(db.list_housing_furniture(old_land_ident, false).is_empty());
@@ -1428,10 +1434,10 @@ mod tests {
     }
 
     #[test]
-    fn ensure_test_estate_migrates_stale_collision_in_descending_land_ident_order() {
+    fn ensure_local_estate_migrates_stale_collision_in_descending_land_ident_order() {
         let mut db = test_db();
-        let higher_land_ident = insert_stale_test_estate(&mut db, 100, 4);
-        let lower_land_ident = insert_stale_test_estate(&mut db, 100, 3);
+        let higher_land_ident = insert_stale_local_estate(&mut db, 100, 4);
+        let lower_land_ident = insert_stale_local_estate(&mut db, 100, 3);
 
         db.upsert_housing_furniture(HousingFurniture {
             land_ident: higher_land_ident,
@@ -1452,7 +1458,7 @@ mod tests {
             ..Default::default()
         });
 
-        let estate = db.ensure_test_estate(100, "Tester", 67);
+        let estate = db.ensure_local_estate(100, "Tester", 67);
         let rows = db.list_housing_furniture(estate.land_ident, true);
 
         assert!(db.list_all_housing_furniture(higher_land_ident).is_empty());
@@ -1471,7 +1477,7 @@ mod tests {
     }
 
     #[test]
-    fn ensure_test_estate_does_not_delete_or_migrate_owned_apartment_rows() {
+    fn ensure_local_estate_does_not_delete_or_migrate_owned_apartment_rows() {
         let mut db = test_db();
         let apartment_house_id = HouseId {
             unit: HouseUnit {
@@ -1479,9 +1485,9 @@ mod tests {
                 apartment_flag: true,
             },
             unk1: 0,
-            ward_index: TEST_HOUSING_WARD_INDEX,
+            ward_index: DEFAULT_LOCAL_HOUSING_WARD_INDEX,
             room_number: 12,
-            territory_type_id: TEST_HOUSING_TERRITORY_TYPE_ID,
+            territory_type_id: DEFAULT_LOCAL_HOUSING_TERRITORY_TYPE_ID,
             world_id: 67,
         };
         let apartment_land_ident = apartment_house_id.to_u64() as i64;
@@ -1490,10 +1496,10 @@ mod tests {
             .values(HousingEstate {
                 land_ident: apartment_land_ident,
                 house_id: apartment_land_ident,
-                territory_type_id: TEST_HOUSING_TERRITORY_TYPE_ID as i32,
+                territory_type_id: DEFAULT_LOCAL_HOUSING_TERRITORY_TYPE_ID as i32,
                 world_id: 67,
-                ward_index: TEST_HOUSING_WARD_INDEX as i32,
-                division: TEST_HOUSING_DIVISION as i32,
+                ward_index: DEFAULT_LOCAL_HOUSING_WARD_INDEX as i32,
+                division: DEFAULT_LOCAL_HOUSING_DIVISION as i32,
                 plot_index: 4,
                 room_number: 12,
                 is_apartment: true,
@@ -1515,7 +1521,7 @@ mod tests {
             ..Default::default()
         });
 
-        let estate = db.ensure_test_estate(100, "Tester", 67);
+        let estate = db.ensure_local_estate(100, "Tester", 67);
 
         let apartment = db.housing_estate_by_house_id(apartment_house_id);
         assert!(apartment.is_some(), "apartment row must not be deleted");
@@ -1528,12 +1534,12 @@ mod tests {
             db.list_housing_furniture(estate.land_ident, true)
                 .iter()
                 .all(|row| row.item_id != 2000),
-            "apartment furniture must not migrate into the outdoor test estate"
+            "apartment furniture must not migrate into the outdoor local estate"
         );
     }
 
     #[test]
-    fn ensure_test_estate_preserves_non_outdoor_owned_rows() {
+    fn ensure_local_estate_preserves_non_outdoor_owned_rows() {
         let mut db = test_db();
         let non_outdoor_house_id = HouseId {
             unit: HouseUnit {
@@ -1541,9 +1547,9 @@ mod tests {
                 apartment_flag: false,
             },
             unk1: 0,
-            ward_index: TEST_HOUSING_WARD_INDEX as u8,
+            ward_index: DEFAULT_LOCAL_HOUSING_WARD_INDEX as u8,
             room_number: 12,
-            territory_type_id: TEST_HOUSING_TERRITORY_TYPE_ID,
+            territory_type_id: DEFAULT_LOCAL_HOUSING_TERRITORY_TYPE_ID,
             world_id: 67,
         };
 
@@ -1551,10 +1557,10 @@ mod tests {
             .values(HousingEstate {
                 land_ident: non_outdoor_house_id.to_u64() as i64,
                 house_id: non_outdoor_house_id.to_u64() as i64,
-                territory_type_id: TEST_HOUSING_TERRITORY_TYPE_ID as i32,
+                territory_type_id: DEFAULT_LOCAL_HOUSING_TERRITORY_TYPE_ID as i32,
                 world_id: 67,
-                ward_index: TEST_HOUSING_WARD_INDEX as i32,
-                division: TEST_HOUSING_DIVISION as i32,
+                ward_index: DEFAULT_LOCAL_HOUSING_WARD_INDEX as i32,
+                division: DEFAULT_LOCAL_HOUSING_DIVISION as i32,
                 plot_index: 9,
                 room_number: 12,
                 is_apartment: false,
@@ -1575,11 +1581,11 @@ mod tests {
             ..Default::default()
         });
 
-        let estate = db.ensure_test_estate(100, "Tester", 67);
+        let estate = db.ensure_local_estate(100, "Tester", 67);
 
         let preserved = db
             .housing_estate_by_house_id(non_outdoor_house_id)
-            .expect("non-outdoor owned row should survive ensure_test_estate cleanup");
+            .expect("non-outdoor owned row should survive ensure_local_estate cleanup");
         let preserved_furniture = db.list_housing_furniture(preserved.land_ident, true);
 
         assert_eq!(preserved_furniture.len(), 1);
@@ -1594,7 +1600,7 @@ mod tests {
     #[test]
     fn update_housing_light_level_persists_for_estate() {
         let mut db = test_db();
-        let estate = db.ensure_test_estate(100, "Tester", 67);
+        let estate = db.ensure_local_estate(100, "Tester", 67);
 
         assert!(db.update_housing_light_level(estate.land_ident, 4));
 
@@ -1605,22 +1611,24 @@ mod tests {
     #[test]
     fn update_housing_name_and_greeting_persist_for_estate() {
         let mut db = test_db();
-        let estate = db.ensure_test_estate(100, "Tester", 67);
+        let estate = db.ensure_local_estate(100, "Tester", 67);
 
         assert!(db.update_housing_name(estate.land_ident, "A Better Name"));
-        assert!(db.update_housing_greeting(estate.land_ident, "Welcome to the local test estate."));
+        assert!(
+            db.update_housing_greeting(estate.land_ident, "Welcome to the local debug estate.")
+        );
 
         let updated = db
             .housing_estate_by_house_id(HouseId::from_u64(estate.house_id as u64))
             .unwrap();
         assert_eq!(updated.estate_name, "A Better Name");
-        assert_eq!(updated.greeting, "Welcome to the local test estate.");
+        assert_eq!(updated.greeting, "Welcome to the local debug estate.");
     }
 
     #[test]
     fn update_housing_name_clamps_to_packet_payload_bytes_on_utf8_boundary() {
         let mut db = test_db();
-        let estate = db.ensure_test_estate(100, "Tester", 67);
+        let estate = db.ensure_local_estate(100, "Tester", 67);
 
         assert!(db.update_housing_name(estate.land_ident, "abcdefghijklmnopqrs한글이잘립니다"));
 
@@ -1636,7 +1644,7 @@ mod tests {
     #[test]
     fn update_housing_greeting_clamps_to_packet_payload_bytes_on_utf8_boundary() {
         let mut db = test_db();
-        let estate = db.ensure_test_estate(100, "Tester", 67);
+        let estate = db.ensure_local_estate(100, "Tester", 67);
         let long_greeting = format!("{}한글이잘립니다", "a".repeat(191));
 
         assert!(db.update_housing_greeting(estate.land_ident, &long_greeting));
@@ -1653,7 +1661,7 @@ mod tests {
     #[test]
     fn update_housing_fixture_json_persists_for_estate() {
         let mut db = test_db();
-        let estate = db.ensure_test_estate(100, "Tester", 67);
+        let estate = db.ensure_local_estate(100, "Tester", 67);
 
         assert!(db.update_housing_exterior_json(
             estate.land_ident,
@@ -1679,10 +1687,10 @@ mod tests {
     }
 
     #[test]
-    fn ensure_test_estate_default_name_is_clamped_to_packet_payload_bytes() {
+    fn ensure_local_estate_default_name_is_clamped_to_packet_payload_bytes() {
         let mut db = test_db();
 
-        let estate = db.ensure_test_estate(100, "abcdefghijklmnopqrs한글", 67);
+        let estate = db.ensure_local_estate(100, "abcdefghijklmnopqrs한글", 67);
 
         assert!(estate.estate_name.as_bytes().len() <= 20);
         assert!(std::str::from_utf8(estate.estate_name.as_bytes()).is_ok());
@@ -1691,7 +1699,7 @@ mod tests {
     #[test]
     fn delete_housing_furniture_for_estate_keeps_estate() {
         let mut db = test_db();
-        let estate = db.ensure_test_estate(100, "Tester", 67);
+        let estate = db.ensure_local_estate(100, "Tester", 67);
 
         db.upsert_housing_furniture(HousingFurniture {
             land_ident: estate.land_ident,
@@ -1714,7 +1722,7 @@ mod tests {
     #[test]
     fn replace_housing_placed_furniture_replaces_all_placed_rows_and_preserves_storerooms() {
         let mut db = test_db();
-        let estate = db.ensure_test_estate(100, "Tester", 67);
+        let estate = db.ensure_local_estate(100, "Tester", 67);
 
         for row in [
             HousingFurniture {
@@ -1807,7 +1815,7 @@ mod tests {
     #[test]
     fn replace_housing_placed_furniture_can_target_only_interior_placed_rows() {
         let mut db = test_db();
-        let estate = db.ensure_test_estate(100, "Tester", 67);
+        let estate = db.ensure_local_estate(100, "Tester", 67);
 
         db.upsert_housing_furniture(HousingFurniture {
             land_ident: estate.land_ident,
@@ -1862,7 +1870,7 @@ mod tests {
     #[test]
     fn replace_housing_placed_furniture_handles_large_interior_presets() {
         let mut db = test_db();
-        let estate = db.ensure_test_estate(100, "Tester", 67);
+        let estate = db.ensure_local_estate(100, "Tester", 67);
         let mut rows = Vec::new();
 
         for slot in 0..600 {
@@ -1896,7 +1904,7 @@ mod tests {
     #[test]
     fn delete_housing_estate_and_furniture_removes_both() {
         let mut db = test_db();
-        let estate = db.ensure_test_estate(100, "Tester", 67);
+        let estate = db.ensure_local_estate(100, "Tester", 67);
 
         db.upsert_housing_furniture(HousingFurniture {
             land_ident: estate.land_ident,
@@ -1925,7 +1933,7 @@ mod tests {
                 HousingEstate {
                     land_ident: 1005,
                     house_id: 1005,
-                    territory_type_id: TEST_HOUSING_TERRITORY_TYPE_ID as i32,
+                    territory_type_id: DEFAULT_LOCAL_HOUSING_TERRITORY_TYPE_ID as i32,
                     world_id: 67,
                     ward_index: 0,
                     division: 0,
@@ -1937,7 +1945,7 @@ mod tests {
                 HousingEstate {
                     land_ident: 1002,
                     house_id: 1002,
-                    territory_type_id: TEST_HOUSING_TERRITORY_TYPE_ID as i32,
+                    territory_type_id: DEFAULT_LOCAL_HOUSING_TERRITORY_TYPE_ID as i32,
                     world_id: 67,
                     ward_index: 0,
                     division: 0,
@@ -1949,7 +1957,7 @@ mod tests {
                 HousingEstate {
                     land_ident: 2005,
                     house_id: 2005,
-                    territory_type_id: TEST_HOUSING_TERRITORY_TYPE_ID as i32,
+                    territory_type_id: DEFAULT_LOCAL_HOUSING_TERRITORY_TYPE_ID as i32,
                     world_id: 68,
                     ward_index: 0,
                     division: 0,
@@ -1959,7 +1967,7 @@ mod tests {
                 HousingEstate {
                     land_ident: 3005,
                     house_id: 3005,
-                    territory_type_id: TEST_HOUSING_TERRITORY_TYPE_ID as i32,
+                    territory_type_id: DEFAULT_LOCAL_HOUSING_TERRITORY_TYPE_ID as i32,
                     world_id: 67,
                     ward_index: 0,
                     division: 1,
@@ -1969,7 +1977,7 @@ mod tests {
                 HousingEstate {
                     land_ident: 4005,
                     house_id: 4005,
-                    territory_type_id: TEST_HOUSING_TERRITORY_TYPE_ID as i32,
+                    territory_type_id: DEFAULT_LOCAL_HOUSING_TERRITORY_TYPE_ID as i32,
                     world_id: 67,
                     ward_index: 0,
                     division: 0,
@@ -1981,7 +1989,7 @@ mod tests {
             .execute(&mut db.connection)
             .unwrap();
 
-        let rows = db.housing_estates_by_ward(TEST_HOUSING_TERRITORY_TYPE_ID, 67, 0, 0);
+        let rows = db.housing_estates_by_ward(DEFAULT_LOCAL_HOUSING_TERRITORY_TYPE_ID, 67, 0, 0);
 
         assert_eq!(
             rows.iter()
@@ -2000,7 +2008,7 @@ mod tests {
                 HousingEstate {
                     land_ident: 1105,
                     house_id: 1105,
-                    territory_type_id: TEST_HOUSING_TERRITORY_TYPE_ID as i32,
+                    territory_type_id: DEFAULT_LOCAL_HOUSING_TERRITORY_TYPE_ID as i32,
                     world_id: 67,
                     ward_index: 0,
                     division: 0,
@@ -2011,7 +2019,7 @@ mod tests {
                 HousingEstate {
                     land_ident: 1102,
                     house_id: 1102,
-                    territory_type_id: TEST_HOUSING_TERRITORY_TYPE_ID as i32,
+                    territory_type_id: DEFAULT_LOCAL_HOUSING_TERRITORY_TYPE_ID as i32,
                     world_id: 67,
                     ward_index: 0,
                     division: 0,
@@ -2022,7 +2030,7 @@ mod tests {
                 HousingEstate {
                     land_ident: 2104,
                     house_id: 2104,
-                    territory_type_id: TEST_HOUSING_TERRITORY_TYPE_ID as i32,
+                    territory_type_id: DEFAULT_LOCAL_HOUSING_TERRITORY_TYPE_ID as i32,
                     world_id: 67,
                     ward_index: 0,
                     division: 1,
@@ -2033,7 +2041,7 @@ mod tests {
                 HousingEstate {
                     land_ident: 2101,
                     house_id: 2101,
-                    territory_type_id: TEST_HOUSING_TERRITORY_TYPE_ID as i32,
+                    territory_type_id: DEFAULT_LOCAL_HOUSING_TERRITORY_TYPE_ID as i32,
                     world_id: 67,
                     ward_index: 0,
                     division: 1,
@@ -2045,8 +2053,11 @@ mod tests {
             .execute(&mut db.connection)
             .unwrap();
 
-        let (main, subdivision) =
-            db.housing_estates_by_ward_and_divisions(TEST_HOUSING_TERRITORY_TYPE_ID, 67, 0);
+        let (main, subdivision) = db.housing_estates_by_ward_and_divisions(
+            DEFAULT_LOCAL_HOUSING_TERRITORY_TYPE_ID,
+            67,
+            0,
+        );
 
         assert_eq!(
             main.iter()
@@ -2064,17 +2075,17 @@ mod tests {
     }
 
     #[test]
-    fn ensure_test_apartment_creates_apartment_house_id() {
+    fn ensure_local_apartment_creates_apartment_house_id() {
         let mut db = test_db();
 
         let apartment = db
-            .ensure_test_apartment(
+            .ensure_local_apartment(
                 100,
                 "Tester",
                 67,
-                TEST_HOUSING_TERRITORY_TYPE_ID,
-                TEST_HOUSING_WARD_INDEX,
-                TEST_HOUSING_DIVISION,
+                DEFAULT_LOCAL_HOUSING_TERRITORY_TYPE_ID,
+                DEFAULT_LOCAL_HOUSING_WARD_INDEX,
+                DEFAULT_LOCAL_HOUSING_DIVISION,
                 12,
             )
             .expect("room 12 apartment should be created");
@@ -2084,39 +2095,42 @@ mod tests {
         assert_eq!(apartment.room_number, 12);
         assert_eq!(apartment.land_ident, apartment.house_id);
         assert_eq!(house_id.room_number, 12);
-        assert_eq!(house_id.territory_type_id, TEST_HOUSING_TERRITORY_TYPE_ID);
+        assert_eq!(
+            house_id.territory_type_id,
+            DEFAULT_LOCAL_HOUSING_TERRITORY_TYPE_ID
+        );
         assert_eq!(house_id.world_id, 67);
         assert!(house_id.unit.apartment_flag);
         assert_eq!(
             house_id.unit.apartment_division_plot_index,
-            TEST_HOUSING_DIVISION
+            DEFAULT_LOCAL_HOUSING_DIVISION
         );
     }
 
     #[test]
-    fn ensure_test_apartment_rejects_room_number_overflow() {
+    fn ensure_local_apartment_rejects_room_number_overflow() {
         let mut db = test_db();
 
         let room_1 = db
-            .ensure_test_apartment(
+            .ensure_local_apartment(
                 100,
                 "Room One",
                 67,
-                TEST_HOUSING_TERRITORY_TYPE_ID,
-                TEST_HOUSING_WARD_INDEX,
-                TEST_HOUSING_DIVISION,
+                DEFAULT_LOCAL_HOUSING_TERRITORY_TYPE_ID,
+                DEFAULT_LOCAL_HOUSING_WARD_INDEX,
+                DEFAULT_LOCAL_HOUSING_DIVISION,
                 1,
             )
             .expect("room 1 apartment should be created");
 
         assert!(
-            db.ensure_test_apartment(
+            db.ensure_local_apartment(
                 100,
                 "Room 1025",
                 67,
-                TEST_HOUSING_TERRITORY_TYPE_ID,
-                TEST_HOUSING_WARD_INDEX,
-                TEST_HOUSING_DIVISION,
+                DEFAULT_LOCAL_HOUSING_TERRITORY_TYPE_ID,
+                DEFAULT_LOCAL_HOUSING_WARD_INDEX,
+                DEFAULT_LOCAL_HOUSING_DIVISION,
                 1025,
             )
             .is_none(),
@@ -2129,10 +2143,10 @@ mod tests {
         assert_eq!(preserved.room_number, 1);
         assert!(
             db.housing_apartment_by_room(
-                TEST_HOUSING_TERRITORY_TYPE_ID,
+                DEFAULT_LOCAL_HOUSING_TERRITORY_TYPE_ID,
                 67,
-                TEST_HOUSING_WARD_INDEX,
-                TEST_HOUSING_DIVISION,
+                DEFAULT_LOCAL_HOUSING_WARD_INDEX,
+                DEFAULT_LOCAL_HOUSING_DIVISION,
                 1025,
             )
             .is_none(),
@@ -2141,9 +2155,9 @@ mod tests {
     }
 
     #[test]
-    fn ensure_test_apartment_does_not_delete_existing_house_or_house_furniture() {
+    fn ensure_local_apartment_does_not_delete_existing_house_or_house_furniture() {
         let mut db = test_db();
-        let house = db.ensure_test_estate(100, "Tester", 67);
+        let house = db.ensure_local_estate(100, "Tester", 67);
         db.upsert_housing_furniture(HousingFurniture {
             land_ident: house.land_ident,
             container_type: container_type_to_i32(ContainerType::HousingInteriorPlacedItems1),
@@ -2155,13 +2169,13 @@ mod tests {
         });
 
         let apartment = db
-            .ensure_test_apartment(
+            .ensure_local_apartment(
                 100,
                 "Tester",
                 67,
-                TEST_HOUSING_TERRITORY_TYPE_ID,
-                TEST_HOUSING_WARD_INDEX,
-                TEST_HOUSING_DIVISION,
+                DEFAULT_LOCAL_HOUSING_TERRITORY_TYPE_ID,
+                DEFAULT_LOCAL_HOUSING_WARD_INDEX,
+                DEFAULT_LOCAL_HOUSING_DIVISION,
                 7,
             )
             .expect("room 7 apartment should be created");
@@ -2186,44 +2200,44 @@ mod tests {
         let mut db = test_db();
 
         let room_12 = db
-            .ensure_test_apartment(
+            .ensure_local_apartment(
                 100,
                 "Room Twelve",
                 67,
-                TEST_HOUSING_TERRITORY_TYPE_ID,
-                TEST_HOUSING_WARD_INDEX,
-                TEST_HOUSING_DIVISION,
+                DEFAULT_LOCAL_HOUSING_TERRITORY_TYPE_ID,
+                DEFAULT_LOCAL_HOUSING_WARD_INDEX,
+                DEFAULT_LOCAL_HOUSING_DIVISION,
                 12,
             )
             .expect("room 12 apartment should exist");
         let room_2 = db
-            .ensure_test_apartment(
+            .ensure_local_apartment(
                 101,
                 "Room Two",
                 67,
-                TEST_HOUSING_TERRITORY_TYPE_ID,
-                TEST_HOUSING_WARD_INDEX,
-                TEST_HOUSING_DIVISION,
+                DEFAULT_LOCAL_HOUSING_TERRITORY_TYPE_ID,
+                DEFAULT_LOCAL_HOUSING_WARD_INDEX,
+                DEFAULT_LOCAL_HOUSING_DIVISION,
                 2,
             )
             .expect("room 2 apartment should exist");
         let _other_ward = db
-            .ensure_test_apartment(
+            .ensure_local_apartment(
                 102,
                 "Other Ward",
                 67,
-                TEST_HOUSING_TERRITORY_TYPE_ID,
-                TEST_HOUSING_WARD_INDEX + 1,
-                TEST_HOUSING_DIVISION,
+                DEFAULT_LOCAL_HOUSING_TERRITORY_TYPE_ID,
+                DEFAULT_LOCAL_HOUSING_WARD_INDEX + 1,
+                DEFAULT_LOCAL_HOUSING_DIVISION,
                 1,
             )
             .expect("other ward apartment should exist");
 
         let apartments = db.housing_apartments_by_ward(
-            TEST_HOUSING_TERRITORY_TYPE_ID,
+            DEFAULT_LOCAL_HOUSING_TERRITORY_TYPE_ID,
             67,
-            TEST_HOUSING_WARD_INDEX,
-            TEST_HOUSING_DIVISION,
+            DEFAULT_LOCAL_HOUSING_WARD_INDEX,
+            DEFAULT_LOCAL_HOUSING_DIVISION,
         );
 
         assert_eq!(
@@ -2236,10 +2250,10 @@ mod tests {
 
         let room_lookup = db
             .housing_apartment_by_room(
-                TEST_HOUSING_TERRITORY_TYPE_ID,
+                DEFAULT_LOCAL_HOUSING_TERRITORY_TYPE_ID,
                 67,
-                TEST_HOUSING_WARD_INDEX,
-                TEST_HOUSING_DIVISION,
+                DEFAULT_LOCAL_HOUSING_WARD_INDEX,
+                DEFAULT_LOCAL_HOUSING_DIVISION,
                 12,
             )
             .expect("room 12 apartment should exist");
@@ -2252,23 +2266,23 @@ mod tests {
         let mut db = test_db();
 
         let main = db
-            .ensure_test_apartment(
+            .ensure_local_apartment(
                 100,
                 "Main Room One",
                 67,
-                TEST_HOUSING_TERRITORY_TYPE_ID,
-                TEST_HOUSING_WARD_INDEX,
+                DEFAULT_LOCAL_HOUSING_TERRITORY_TYPE_ID,
+                DEFAULT_LOCAL_HOUSING_WARD_INDEX,
                 0,
                 1,
             )
             .expect("main-division apartment should exist");
         let subdivision = db
-            .ensure_test_apartment(
+            .ensure_local_apartment(
                 100,
                 "Subdivision Room One",
                 67,
-                TEST_HOUSING_TERRITORY_TYPE_ID,
-                TEST_HOUSING_WARD_INDEX,
+                DEFAULT_LOCAL_HOUSING_TERRITORY_TYPE_ID,
+                DEFAULT_LOCAL_HOUSING_WARD_INDEX,
                 1,
                 1,
             )
@@ -2283,15 +2297,15 @@ mod tests {
         assert_eq!(subdivision_house_id.unit.apartment_division_plot_index, 1);
 
         let main_rows = db.housing_apartments_by_ward(
-            TEST_HOUSING_TERRITORY_TYPE_ID,
+            DEFAULT_LOCAL_HOUSING_TERRITORY_TYPE_ID,
             67,
-            TEST_HOUSING_WARD_INDEX,
+            DEFAULT_LOCAL_HOUSING_WARD_INDEX,
             0,
         );
         let subdivision_rows = db.housing_apartments_by_ward(
-            TEST_HOUSING_TERRITORY_TYPE_ID,
+            DEFAULT_LOCAL_HOUSING_TERRITORY_TYPE_ID,
             67,
-            TEST_HOUSING_WARD_INDEX,
+            DEFAULT_LOCAL_HOUSING_WARD_INDEX,
             1,
         );
 
@@ -2312,18 +2326,18 @@ mod tests {
 
         let main_lookup = db
             .housing_apartment_by_room(
-                TEST_HOUSING_TERRITORY_TYPE_ID,
+                DEFAULT_LOCAL_HOUSING_TERRITORY_TYPE_ID,
                 67,
-                TEST_HOUSING_WARD_INDEX,
+                DEFAULT_LOCAL_HOUSING_WARD_INDEX,
                 0,
                 1,
             )
             .expect("main room 1 should be addressable");
         let subdivision_lookup = db
             .housing_apartment_by_room(
-                TEST_HOUSING_TERRITORY_TYPE_ID,
+                DEFAULT_LOCAL_HOUSING_TERRITORY_TYPE_ID,
                 67,
-                TEST_HOUSING_WARD_INDEX,
+                DEFAULT_LOCAL_HOUSING_WARD_INDEX,
                 1,
                 1,
             )
@@ -2337,7 +2351,7 @@ mod tests {
     fn owned_estates_returns_character_estate() {
         let mut db = test_db();
 
-        db.ensure_test_estate(100, "Tester", 67);
+        db.ensure_local_estate(100, "Tester", 67);
 
         assert_eq!(db.owned_housing_estates(100).len(), 1);
         assert!(db.owned_housing_estates(200).is_empty());
@@ -2346,7 +2360,7 @@ mod tests {
     #[test]
     fn upsert_furniture_placement_replaces_same_slot() {
         let mut db = test_db();
-        let estate = db.ensure_test_estate(100, "Tester", 67);
+        let estate = db.ensure_local_estate(100, "Tester", 67);
 
         db.upsert_housing_furniture(HousingFurniture {
             land_ident: estate.land_ident,
@@ -2376,7 +2390,7 @@ mod tests {
     #[test]
     fn update_furniture_position_changes_only_position_fields() {
         let mut db = test_db();
-        let estate = db.ensure_test_estate(100, "Tester", 67);
+        let estate = db.ensure_local_estate(100, "Tester", 67);
 
         db.upsert_housing_furniture(HousingFurniture {
             land_ident: estate.land_ident,
@@ -2408,7 +2422,7 @@ mod tests {
     #[test]
     fn update_outdoor_housing_furniture_position_uses_exterior_placed_container() {
         let mut db = test_db();
-        let estate = db.ensure_test_estate(100, "Tester", 67);
+        let estate = db.ensure_local_estate(100, "Tester", 67);
 
         db.upsert_housing_furniture(HousingFurniture {
             land_ident: estate.land_ident,
@@ -2441,7 +2455,7 @@ mod tests {
     #[test]
     fn move_placed_furniture_to_inventory_deletes_row() {
         let mut db = test_db();
-        let estate = db.ensure_test_estate(100, "Tester", 67);
+        let estate = db.ensure_local_estate(100, "Tester", 67);
 
         db.upsert_housing_furniture(HousingFurniture {
             land_ident: estate.land_ident,
@@ -2475,7 +2489,7 @@ mod tests {
     #[test]
     fn move_placed_furniture_to_storeroom_marks_unplaced() {
         let mut db = test_db();
-        let estate = db.ensure_test_estate(100, "Tester", 67);
+        let estate = db.ensure_local_estate(100, "Tester", 67);
 
         db.upsert_housing_furniture(HousingFurniture {
             land_ident: estate.land_ident,
@@ -2513,7 +2527,7 @@ mod tests {
     #[test]
     fn move_outdoor_housing_placed_furniture_to_storeroom_marks_unplaced() {
         let mut db = test_db();
-        let estate = db.ensure_test_estate(100, "Tester", 67);
+        let estate = db.ensure_local_estate(100, "Tester", 67);
 
         db.upsert_housing_furniture(HousingFurniture {
             land_ident: estate.land_ident,
@@ -2559,7 +2573,7 @@ mod tests {
     #[test]
     fn move_storeroom_furniture_to_inventory_deletes_row() {
         let mut db = test_db();
-        let estate = db.ensure_test_estate(100, "Tester", 67);
+        let estate = db.ensure_local_estate(100, "Tester", 67);
 
         db.upsert_housing_furniture(HousingFurniture {
             land_ident: estate.land_ident,
@@ -2593,7 +2607,7 @@ mod tests {
     #[test]
     fn move_outdoor_housing_storeroom_furniture_to_inventory_deletes_row() {
         let mut db = test_db();
-        let estate = db.ensure_test_estate(100, "Tester", 67);
+        let estate = db.ensure_local_estate(100, "Tester", 67);
 
         db.upsert_housing_furniture(HousingFurniture {
             land_ident: estate.land_ident,
@@ -2627,7 +2641,7 @@ mod tests {
     #[test]
     fn housing_summary_json_for_admin_returns_compact_rows_with_furniture_counts() {
         let mut db = test_db();
-        let estate = db.ensure_test_estate(100, "Tester", 67);
+        let estate = db.ensure_local_estate(100, "Tester", 67);
 
         db.upsert_housing_furniture(HousingFurniture {
             land_ident: estate.land_ident,
@@ -2695,7 +2709,7 @@ mod tests {
     #[test]
     fn housing_summary_json_for_admin_keeps_compact_lists_under_ipc_limit() {
         let mut db = test_db();
-        let base = db.ensure_test_estate(100, "Tester", 67);
+        let base = db.ensure_local_estate(100, "Tester", 67);
 
         for idx in 0..10 {
             let mut estate = base.clone();
@@ -2738,7 +2752,7 @@ mod tests {
     #[test]
     fn housing_estate_detail_json_for_admin_includes_counts_and_furniture_rows() {
         let mut db = test_db();
-        let estate = db.ensure_test_estate(100, "Tester", 67);
+        let estate = db.ensure_local_estate(100, "Tester", 67);
 
         db.upsert_housing_furniture(HousingFurniture {
             land_ident: estate.land_ident,
@@ -2767,7 +2781,7 @@ mod tests {
 
         let json = db
             .housing_estate_detail_json_for_admin(estate.land_ident)
-            .expect("detail should exist for test estate");
+            .expect("detail should exist for local estate");
         let detail: serde_json::Value = serde_json::from_str(&json).unwrap();
         let furniture = detail["furniture"]
             .as_array()
@@ -2803,7 +2817,7 @@ mod tests {
     #[test]
     fn admin_detail_ipc_json_uses_bounded_fallback() {
         let mut db = test_db();
-        let estate = db.ensure_test_estate(100, "Tester", 67);
+        let estate = db.ensure_local_estate(100, "Tester", 67);
 
         assert!(db.update_housing_exterior_json(estate.land_ident, &"e".repeat(2048)));
         assert!(db.update_housing_interior_json(estate.land_ident, &"i".repeat(2048)));
@@ -2829,7 +2843,7 @@ mod tests {
         let bounded = db
             .housing_estate_detail_ipc_json_for_admin(estate.land_ident)
             .expect("detail JSON should serialize")
-            .expect("detail should exist for test estate");
+            .expect("detail should exist for local estate");
         assert!(bounded.len() <= HOUSING_ADMIN_DETAIL_JSON_MAX_BYTES);
 
         let parsed: serde_json::Value =
@@ -2885,7 +2899,7 @@ mod tests {
     #[test]
     fn export_and_import_housing_estate_round_trips_estate_and_furniture() {
         let mut db = test_db();
-        let estate = db.ensure_test_estate(100, "Tester", 67);
+        let estate = db.ensure_local_estate(100, "Tester", 67);
 
         assert!(db.update_housing_name(estate.land_ident, "Admin Export Estate"));
         assert!(
@@ -2963,15 +2977,15 @@ mod tests {
     #[test]
     fn import_housing_estate_normalizes_furniture_land_ident_to_imported_estate() {
         let mut db = test_db();
-        let target = db.ensure_test_estate(100, "Tester", 67);
-        let foreign = db.ensure_test_estate_with_spec(HousingEstateSpec {
+        let target = db.ensure_local_estate(100, "Tester", 67);
+        let foreign = db.ensure_local_estate_with_spec(HousingEstateSpec {
             owner_content_id: 200,
             owner_name: "Foreign".to_string(),
             world_id: 67,
-            territory_type_id: TEST_HOUSING_TERRITORY_TYPE_ID,
-            ward_index: TEST_HOUSING_WARD_INDEX,
-            division: TEST_HOUSING_DIVISION,
-            plot_index: TEST_HOUSING_PLOT_INDEX + 1,
+            territory_type_id: DEFAULT_LOCAL_HOUSING_TERRITORY_TYPE_ID,
+            ward_index: DEFAULT_LOCAL_HOUSING_WARD_INDEX,
+            division: DEFAULT_LOCAL_HOUSING_DIVISION,
+            plot_index: DEFAULT_LOCAL_HOUSING_PLOT_INDEX + 1,
             plot_size: PlotSize::Medium,
             free_company: false,
         });
