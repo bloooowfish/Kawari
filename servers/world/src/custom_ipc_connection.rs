@@ -61,8 +61,8 @@ fn housing_detail_json_for_admin_result(
     }
 }
 
-fn housing_import_result(message: String) -> CustomIpcData {
-    CustomIpcData::HousingEstateImportResult {
+fn housing_mutation_result(message: String) -> CustomIpcData {
+    CustomIpcData::HousingEstateMutationResult {
         message: clamp_housing_message_for_ipc(&message),
     }
 }
@@ -396,7 +396,7 @@ impl CustomIpcConnection {
 
                 self.send_custom_response(PacketSegment {
                     segment_type: SegmentType::KawariIpc,
-                    data: SegmentData::KawariIpc(CustomIpcSegment::new(housing_import_result(
+                    data: SegmentData::KawariIpc(CustomIpcSegment::new(housing_mutation_result(
                         message,
                     ))),
                     ..Default::default()
@@ -415,7 +415,7 @@ impl CustomIpcConnection {
 
                 self.send_custom_response(PacketSegment {
                     segment_type: SegmentType::KawariIpc,
-                    data: SegmentData::KawariIpc(CustomIpcSegment::new(housing_import_result(
+                    data: SegmentData::KawariIpc(CustomIpcSegment::new(housing_mutation_result(
                         message,
                     ))),
                     ..Default::default()
@@ -441,7 +441,7 @@ impl CustomIpcConnection {
 
                 self.send_custom_response(PacketSegment {
                     segment_type: SegmentType::KawariIpc,
-                    data: SegmentData::KawariIpc(CustomIpcSegment::new(housing_import_result(
+                    data: SegmentData::KawariIpc(CustomIpcSegment::new(housing_mutation_result(
                         message,
                     ))),
                     ..Default::default()
@@ -520,7 +520,7 @@ impl CustomIpcConnection {
 
                 self.send_custom_response(PacketSegment {
                     segment_type: SegmentType::KawariIpc,
-                    data: SegmentData::KawariIpc(CustomIpcSegment::new(housing_import_result(
+                    data: SegmentData::KawariIpc(CustomIpcSegment::new(housing_mutation_result(
                         message,
                     ))),
                     ..Default::default()

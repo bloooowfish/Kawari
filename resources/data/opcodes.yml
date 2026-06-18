@@ -1373,7 +1373,7 @@ CustomIpcType:
   comment: Imports one housing estate JSON file into the world database.
   opcode: 27
   size: 260
-- name: HousingEstateImportResult
+- name: HousingEstateMutationResult
   comment: Result message for housing admin import and mutation requests.
   opcode: 28
   size: 512

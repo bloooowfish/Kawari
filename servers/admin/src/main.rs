@@ -17,6 +17,7 @@ use kawari::web_static_dir;
 use minijinja::context;
 use minijinja::{Environment, path_loader};
 use serde::Deserialize;
+use std::fmt::Write as _;
 use tower_http::services::ServeDir;
 
 fn setup_default_environment() -> Environment<'static> {
@@ -78,6 +79,8 @@ async fn characters() -> Html<String> {
 #[derive(Deserialize, Default)]
 struct HousingQuery {
     land_ident: Option<i64>,
+    status: Option<String>,
+    message: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -138,6 +141,115 @@ fn update_housing_estate_text_warning(input: &HousingUpdateTextForm) -> Option<S
 fn build_import_housing_estate_request(path: &str) -> Result<CustomIpcData, String> {
     validate_housing_import_path_for_ipc(path)
         .map(|path| CustomIpcData::ImportHousingEstate { path })
+}
+
+fn housing_query_value(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|value| !value.is_empty())
+}
+
+fn housing_status_label(status: &str) -> String {
+    match status.trim().to_ascii_lowercase().as_str() {
+        "success" => "Success".to_string(),
+        "warning" => "Warning".to_string(),
+        "error" => "Error".to_string(),
+        _ => status.trim().to_string(),
+    }
+}
+
+fn housing_query_status_message(query: &HousingQuery) -> Option<String> {
+    let status = housing_query_value(query.status.as_deref());
+    let message = housing_query_value(query.message.as_deref());
+
+    match (status, message) {
+        (Some(status), Some(message)) => {
+            Some(format!("{}: {message}", housing_status_label(status)))
+        }
+        (Some(status), None) => Some(housing_status_label(status)),
+        (None, Some(message)) => Some(message.to_string()),
+        (None, None) => None,
+    }
+}
+
+fn percent_encode_query_value(value: &str) -> String {
+    let mut encoded = String::new();
+
+    for byte in value.as_bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                encoded.push(*byte as char)
+            }
+            _ => write!(&mut encoded, "%{byte:02X}").expect("writing to a String cannot fail"),
+        }
+    }
+
+    encoded
+}
+
+fn housing_redirect_location(
+    selected_land_ident: Option<i64>,
+    status: &str,
+    message: &str,
+) -> String {
+    let mut params = Vec::new();
+
+    if let Some(land_ident) = selected_land_ident {
+        params.push(format!("land_ident={land_ident}"));
+    }
+
+    if let Some(status) = housing_query_value(Some(status)) {
+        params.push(format!("status={}", percent_encode_query_value(status)));
+    }
+
+    if let Some(message) = housing_query_value(Some(message)) {
+        params.push(format!("message={}", percent_encode_query_value(message)));
+    }
+
+    if params.is_empty() {
+        "/housing".to_string()
+    } else {
+        format!("/housing?{}", params.join("&"))
+    }
+}
+
+fn housing_redirect_after_post(
+    selected_land_ident: Option<i64>,
+    status: &str,
+    message: &str,
+) -> Redirect {
+    Redirect::to(&housing_redirect_location(
+        selected_land_ident,
+        status,
+        message,
+    ))
+}
+
+fn housing_status_for_message(message: &str) -> &'static str {
+    let message = message.trim();
+    if message.starts_with("Failed")
+        || message.starts_with("Unexpected")
+        || message.starts_with("World server did not respond")
+        || message.contains(" was not found")
+        || message.contains("Import path")
+        || message.contains("Confirmation checkbox")
+    {
+        "error"
+    } else {
+        "success"
+    }
+}
+
+fn housing_mutation_response_message(
+    response: Option<CustomIpcSegment>,
+    unexpected_message: &str,
+    timeout_message: &str,
+) -> String {
+    match response {
+        Some(response) => match response.data {
+            CustomIpcData::HousingEstateMutationResult { message } => message,
+            _ => unexpected_message.to_string(),
+        },
+        None => timeout_message.to_string(),
+    }
 }
 
 #[derive(Debug, Default, PartialEq)]
@@ -290,71 +402,69 @@ async fn render_housing_page(
 }
 
 async fn housing(Query(query): Query<HousingQuery>) -> Html<String> {
-    render_housing_page(query.land_ident, None).await
+    render_housing_page(query.land_ident, housing_query_status_message(&query)).await
 }
 
-async fn reset_housing_furniture(Form(input): Form<HousingLandIdentForm>) -> Html<String> {
-    let message = match send_custom_world_packet(CustomIpcSegment::new(
-        CustomIpcData::ResetHousingFurniture {
-            land_ident: input.land_ident,
-        },
-    ))
-    .await
-    {
-        Some(response) => match response.data {
-            CustomIpcData::HousingEstateImportResult { message } => message,
-            _ => "Unexpected response while resetting furniture.".to_string(),
-        },
-        None => "World server did not respond to reset furniture.".to_string(),
-    };
+async fn reset_housing_furniture(Form(input): Form<HousingLandIdentForm>) -> Redirect {
+    let message = housing_mutation_response_message(
+        send_custom_world_packet(CustomIpcSegment::new(
+            CustomIpcData::ResetHousingFurniture {
+                land_ident: input.land_ident,
+            },
+        ))
+        .await,
+        "Unexpected response while resetting furniture.",
+        "World server did not respond to reset furniture.",
+    );
 
-    render_housing_page(Some(input.land_ident), Some(message)).await
+    housing_redirect_after_post(
+        Some(input.land_ident),
+        housing_status_for_message(&message),
+        &message,
+    )
 }
 
-async fn reset_housing_estate(Form(input): Form<HousingResetEstateForm>) -> Html<String> {
+async fn reset_housing_estate(Form(input): Form<HousingResetEstateForm>) -> Redirect {
     if input.confirm_reset.as_deref() != Some("on") {
-        return render_housing_page(
+        return housing_redirect_after_post(
             Some(input.land_ident),
-            Some("Confirmation checkbox is required before resetting an estate.".to_string()),
-        )
-        .await;
+            "error",
+            "Confirmation checkbox is required before resetting an estate.",
+        );
     }
 
-    let message =
-        match send_custom_world_packet(CustomIpcSegment::new(CustomIpcData::ResetHousingEstate {
+    let message = housing_mutation_response_message(
+        send_custom_world_packet(CustomIpcSegment::new(CustomIpcData::ResetHousingEstate {
             land_ident: input.land_ident,
         }))
-        .await
-        {
-            Some(response) => match response.data {
-                CustomIpcData::HousingEstateImportResult { message } => message,
-                _ => "Unexpected response while resetting estate.".to_string(),
-            },
-            None => "World server did not respond to reset estate.".to_string(),
-        };
+        .await,
+        "Unexpected response while resetting estate.",
+        "World server did not respond to reset estate.",
+    );
 
-    render_housing_page(None, Some(message)).await
+    housing_redirect_after_post(None, housing_status_for_message(&message), &message)
 }
 
-async fn update_housing_text(Form(input): Form<HousingUpdateTextForm>) -> Html<String> {
+async fn update_housing_text(Form(input): Form<HousingUpdateTextForm>) -> Redirect {
     let warning = update_housing_estate_text_warning(&input);
-    let message = match send_custom_world_packet(CustomIpcSegment::new(
-        build_update_housing_estate_text_request(&input),
-    ))
-    .await
-    {
-        Some(response) => match response.data {
-            CustomIpcData::HousingEstateImportResult { message } => message,
-            _ => "Unexpected response while updating estate text.".to_string(),
-        },
-        None => "World server did not respond to update estate text.".to_string(),
+    let message = housing_mutation_response_message(
+        send_custom_world_packet(CustomIpcSegment::new(
+            build_update_housing_estate_text_request(&input),
+        ))
+        .await,
+        "Unexpected response while updating estate text.",
+        "World server did not respond to update estate text.",
+    );
+    let status = if housing_status_for_message(&message) == "error" {
+        "error"
+    } else if warning.is_some() {
+        "warning"
+    } else {
+        "success"
     };
+    let message = merge_status_messages(warning, Some(message)).unwrap_or_default();
 
-    render_housing_page(
-        Some(input.land_ident),
-        merge_status_messages(warning, Some(message)),
-    )
-    .await
+    housing_redirect_after_post(Some(input.land_ident), status, &message)
 }
 
 async fn export_housing_estate(Form(input): Form<HousingLandIdentForm>) -> Html<String> {
@@ -380,25 +490,23 @@ async fn export_housing_estate(Form(input): Form<HousingLandIdentForm>) -> Html<
     render_housing_page(Some(input.land_ident), Some(message)).await
 }
 
-async fn import_housing_estate(Form(input): Form<HousingImportForm>) -> Html<String> {
+async fn import_housing_estate(Form(input): Form<HousingImportForm>) -> Redirect {
     if input.path.trim().is_empty() {
-        return render_housing_page(None, Some("Import path is required.".to_string())).await;
+        return housing_redirect_after_post(None, "error", "Import path is required.");
     }
 
     let request = match build_import_housing_estate_request(&input.path) {
         Ok(request) => request,
-        Err(message) => return render_housing_page(None, Some(message)).await,
+        Err(message) => return housing_redirect_after_post(None, "error", &message),
     };
 
-    let message = match send_custom_world_packet(CustomIpcSegment::new(request)).await {
-        Some(response) => match response.data {
-            CustomIpcData::HousingEstateImportResult { message } => message,
-            _ => "Unexpected response while importing estate.".to_string(),
-        },
-        None => "World server did not respond to import estate.".to_string(),
-    };
+    let message = housing_mutation_response_message(
+        send_custom_world_packet(CustomIpcSegment::new(request)).await,
+        "Unexpected response while importing estate.",
+        "World server did not respond to import estate.",
+    );
 
-    render_housing_page(None, Some(message)).await
+    housing_redirect_after_post(None, housing_status_for_message(&message), &message)
 }
 
 #[derive(Deserialize, Debug)]
@@ -482,12 +590,50 @@ async fn main() {
 
 #[cfg(test)]
 mod tests {
+    use axum::{
+        http::{StatusCode, header},
+        response::IntoResponse,
+    };
     use kawari::ipc::kawari::{CustomIpcData, CustomIpcSegment};
+    use minijinja::{Environment, context, path_loader};
+    use std::{fs, path::PathBuf, sync::Mutex};
 
     use super::{
-        HousingUpdateTextForm, build_import_housing_estate_request, parse_housing_detail_response,
-        parse_housing_summary_json, update_housing_estate_text_warning,
+        HousingQuery, HousingUpdateTextForm, build_import_housing_estate_request,
+        housing_query_status_message, housing_redirect_after_post, housing_redirect_location,
+        parse_housing_detail_response, parse_housing_summary_json, setup_default_environment,
+        update_housing_estate_text_warning,
     };
+
+    static CWD_LOCK: Mutex<()> = Mutex::new(());
+
+    struct CurrentDirGuard {
+        original: PathBuf,
+    }
+
+    impl CurrentDirGuard {
+        fn change_to(path: &std::path::Path) -> Self {
+            let original = std::env::current_dir().expect("current directory should be available");
+            std::env::set_current_dir(path).expect("test should be able to change current dir");
+            Self { original }
+        }
+    }
+
+    impl Drop for CurrentDirGuard {
+        fn drop(&mut self) {
+            std::env::set_current_dir(&self.original)
+                .expect("test should be able to restore current dir");
+        }
+    }
+
+    fn test_template_environment() -> Environment<'static> {
+        let mut env = Environment::new();
+        let template_dir =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../resources/web/templates");
+        env.set_loader(path_loader(template_dir));
+
+        env
+    }
 
     #[test]
     fn housing_summary_array_returns_estates_without_status_message() {
@@ -563,9 +709,112 @@ mod tests {
     }
 
     #[test]
+    fn housing_import_request_trims_whitespace_before_validation() {
+        assert!(matches!(
+            build_import_housing_estate_request("  estate-123.json \r\n"),
+            Ok(CustomIpcData::ImportHousingEstate { path }) if path == "housing-exports/estate-123.json"
+        ));
+    }
+
+    #[test]
     fn housing_import_request_rejects_parent_traversal() {
         assert!(build_import_housing_estate_request("../estate-123.json").is_err());
         assert!(build_import_housing_estate_request("housing-exports/../estate-123.json").is_err());
+    }
+
+    #[test]
+    fn housing_redirect_location_preserves_selection_and_encodes_status_message() {
+        assert_eq!(
+            housing_redirect_location(
+                Some(101),
+                "success",
+                "Updated estate text for 101. Path: housing-exports/estate 101.json",
+            ),
+            "/housing?land_ident=101&status=success&message=Updated%20estate%20text%20for%20101.%20Path%3A%20housing-exports%2Festate%20101.json"
+        );
+    }
+
+    #[test]
+    fn housing_redirect_after_post_uses_see_other_status_and_location() {
+        let response =
+            housing_redirect_after_post(None, "error", "Import path is required.").into_response();
+
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        assert_eq!(
+            response
+                .headers()
+                .get(header::LOCATION)
+                .expect("redirect should set Location")
+                .to_str()
+                .expect("Location should be valid ASCII"),
+            "/housing?status=error&message=Import%20path%20is%20required."
+        );
+    }
+
+    #[test]
+    fn housing_query_status_message_uses_query_message_with_status_label() {
+        let query = HousingQuery {
+            land_ident: Some(101),
+            status: Some("success".to_string()),
+            message: Some("Updated estate text for 101.".to_string()),
+        };
+
+        assert_eq!(
+            housing_query_status_message(&query),
+            Some("Success: Updated estate text for 101.".to_string())
+        );
+    }
+
+    #[test]
+    fn admin_default_environment_uses_current_directory_template_path() {
+        let _lock = CWD_LOCK
+            .lock()
+            .expect("cwd test lock should not be poisoned");
+        let temp_dir = std::env::temp_dir().join(format!(
+            "kawari-admin-template-loader-{}",
+            std::process::id()
+        ));
+        let template_dir = temp_dir.join("resources/web/templates");
+        fs::create_dir_all(&template_dir).expect("test template directory should be created");
+        fs::write(
+            template_dir.join("admin_housing.html"),
+            "relative-loader-marker",
+        )
+        .expect("test template should be written");
+
+        let _cwd = CurrentDirGuard::change_to(&temp_dir);
+        let environment = setup_default_environment();
+        let rendered = environment
+            .get_template("admin_housing.html")
+            .expect("cwd-relative template should be loaded")
+            .render(context! {})
+            .expect("test template should render");
+
+        assert_eq!(rendered, "relative-loader-marker");
+
+        drop(_cwd);
+        fs::remove_dir_all(temp_dir).expect("test template directory should be cleaned up");
+    }
+
+    #[test]
+    fn admin_housing_status_message_escapes_template_html() {
+        let environment = test_template_environment();
+        let template = environment.get_template("admin_housing.html").unwrap();
+
+        let rendered = template
+            .render(context! {
+                estates => Vec::<serde_json::Value>::new(),
+                selected_land_ident => Option::<i64>::None,
+                selected_estate => Option::<serde_json::Value>::None,
+                selected_detail_json => Option::<String>::None,
+                status_message => Some("<script>alert(1)</script>".to_string()),
+                name_max_bytes => 20,
+                greeting_max_bytes => 192,
+            })
+            .unwrap();
+
+        assert!(rendered.contains("&lt;script&gt;alert(1)&lt;&#x2f;script&gt;"));
+        assert!(!rendered.contains("<script>alert(1)</script>"));
     }
 
     #[test]

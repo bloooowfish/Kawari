@@ -174,7 +174,7 @@ pub enum CustomIpcData {
         #[bw(map = write_string)]
         path: String,
     },
-    HousingEstateImportResult {
+    HousingEstateMutationResult {
         #[bw(pad_size_to = HOUSING_ADMIN_MESSAGE_MAX_BYTES)]
         #[br(count = HOUSING_ADMIN_MESSAGE_MAX_BYTES)]
         #[br(map = read_string)]
@@ -352,8 +352,35 @@ mod tests {
             HOUSING_ADMIN_IMPORT_PATH_MAX_BYTES as u32
         );
         assert_eq!(
-            CustomIpcType::HousingEstateImportResult.calc_size(),
+            CustomIpcType::HousingEstateMutationResult.calc_size(),
             HOUSING_ADMIN_MESSAGE_MAX_BYTES as u32
+        );
+    }
+
+    #[test]
+    fn housing_estate_mutation_result_uses_admin_message_payload_size() {
+        assert_eq!(
+            CustomIpcType::HousingEstateMutationResult.calc_size(),
+            HOUSING_ADMIN_MESSAGE_MAX_BYTES as u32
+        );
+        assert_eq!(CustomIpcType::HousingEstateMutationResult.get_opcode(), 28);
+
+        let message = clamp_housing_message_for_ipc(&format!(
+            "{}{}",
+            "Mutation completed. ".repeat(64),
+            "끝".repeat(32)
+        ));
+
+        assert!(message.len() <= HOUSING_ADMIN_MESSAGE_MAX_BYTES);
+        assert!(std::str::from_utf8(message.as_bytes()).is_ok());
+
+        let bytes = serialize_custom_ipc(CustomIpcData::HousingEstateMutationResult { message });
+        assert_eq!(
+            bytes.len(),
+            CustomIpcSegment::new(CustomIpcData::HousingEstateMutationResult {
+                message: String::new(),
+            })
+            .calc_size() as usize
         );
     }
 
