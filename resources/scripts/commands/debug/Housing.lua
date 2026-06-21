@@ -67,7 +67,7 @@ local function usage(player)
     printf(player, "Usage: !housing")
     printf(player, "       !housing testhouse [personal|fc] [small|medium|large] [territory_id] [ward] [plot]")
     printf(player, "       !housing apartment [room]")
-    printf(player, "       !housing enter [apartment [room]]")
+    printf(player, "       !housing enter [house|apartment [room]]")
     printf(player, "       !housing exit")
     printf(player, "       !housing reload")
     printf(player, "       !housing info")
@@ -273,7 +273,23 @@ end
 local function handle_enter(player, args)
     local target = lower(args[2])
 
+    if target == nil or target == "house" then
+        if args[3] ~= nil then
+            usage(player)
+            return
+        end
+
+        player:enter_local_house()
+        printf(player, "Entering your local debug estate.")
+        return
+    end
+
     if target == "apartment" then
+        if args[4] ~= nil then
+            usage(player)
+            return
+        end
+
         local room = parse_range(args[3], 1, 1, MAX_APARTMENT_ROOM_NUMBER)
 
         if room == nil then
@@ -286,8 +302,7 @@ local function handle_enter(player, args)
         return
     end
 
-    player:enter_local_house()
-    printf(player, "Entering your local debug estate.")
+    usage(player)
 end
 
 local function handle_exit(player, args)

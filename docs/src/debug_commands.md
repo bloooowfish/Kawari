@@ -55,7 +55,7 @@ Supported forms:
 
 - `!housing testhouse [personal|fc] [small|medium|large] [territory_id] [ward] [plot]` creates or refreshes a local debug estate.
 - `!housing apartment [room]` creates or refreshes a local apartment room.
-- `!housing enter [apartment [room]]`, `!housing exit`, `!housing reload`, and `!housing info` enter, leave, reload, or print the active housing context.
+- `!housing enter [house|apartment [room]]`, `!housing exit`, `!housing reload`, and `!housing info` enter, leave, reload, or print the active housing context.
 - `!housing reset furniture|estate|all`, `!housing name <text>`, `!housing greeting <text>`, and `!housing light <0-5>` queue estate updates.
 - `!housing exterior <field> <value>` and `!housing exterior color <field> <stain>` update exterior fixture or stain values.
 - `!housing interior <field> <value>` updates interior fixture values.

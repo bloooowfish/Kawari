@@ -1544,12 +1544,33 @@ mod tests {
             )
             .unwrap();
         lua.load(include_str!(
-            "../../../../resources/scripts/commands/gm/Housing.lua"
+            "../../../../resources/scripts/commands/debug/Housing.lua"
         ))
         .exec()
         .unwrap();
 
         (lua, messages)
+    }
+
+    #[test]
+    fn housing_lua_commands_registry_points_housing_at_debug_script() {
+        let commands = include_str!("../../../../resources/scripts/commands/Commands.lua");
+        let legacy_housing_target = ["GM_DIR", "..", r#""Housing.lua""#].concat();
+        let housing_registers = commands
+            .lines()
+            .filter(|line| line.contains(r#"registerCommand("housing""#))
+            .collect::<Vec<_>>();
+
+        assert!(
+            housing_registers
+                .iter()
+                .any(|line| line.contains(r#"DBG_DIR.."Housing.lua""#))
+        );
+        assert!(
+            !housing_registers
+                .iter()
+                .any(|line| line.contains(&legacy_housing_target))
+        );
     }
 
     #[test]
@@ -1576,6 +1597,92 @@ mod tests {
     }
 
     #[test]
+    fn housing_lua_enter_typo_prints_usage_and_queues_no_tasks() {
+        let (lua, messages) = load_housing_lua_with_messages();
+
+        let player = lua.create_userdata(LuaPlayer::default()).unwrap();
+        let args = lua.create_table().unwrap();
+        args.set(1, "enter").unwrap();
+        args.set(2, "typo").unwrap();
+
+        let on_command: Function = lua.globals().get("onCommand").unwrap();
+        on_command
+            .call::<()>((player.clone(), args, "housing"))
+            .unwrap();
+
+        let player = player.borrow::<LuaPlayer>().unwrap();
+        assert!(player.queued_tasks.is_empty());
+
+        let usage = messages.lock().join("\n");
+        assert!(usage.contains("Usage: !housing"));
+        assert!(usage.contains("!housing enter"));
+    }
+
+    #[test]
+    fn housing_lua_bare_enter_queues_local_house_enter() {
+        let (lua, _messages) = load_housing_lua_with_messages();
+
+        let player = lua.create_userdata(LuaPlayer::default()).unwrap();
+        let args = lua.create_table().unwrap();
+        args.set(1, "enter").unwrap();
+
+        let on_command: Function = lua.globals().get("onCommand").unwrap();
+        on_command
+            .call::<()>((player.clone(), args, "housing"))
+            .unwrap();
+
+        let player = player.borrow::<LuaPlayer>().unwrap();
+        match player.queued_tasks.as_slice() {
+            [LuaTask::EnterLocalHouse {}] => {}
+            other => panic!("unexpected tasks: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn housing_lua_enter_house_queues_local_house_enter() {
+        let (lua, _messages) = load_housing_lua_with_messages();
+
+        let player = lua.create_userdata(LuaPlayer::default()).unwrap();
+        let args = lua.create_table().unwrap();
+        args.set(1, "enter").unwrap();
+        args.set(2, "house").unwrap();
+
+        let on_command: Function = lua.globals().get("onCommand").unwrap();
+        on_command
+            .call::<()>((player.clone(), args, "housing"))
+            .unwrap();
+
+        let player = player.borrow::<LuaPlayer>().unwrap();
+        match player.queued_tasks.as_slice() {
+            [LuaTask::EnterLocalHouse {}] => {}
+            other => panic!("unexpected tasks: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn housing_lua_enter_house_extra_prints_usage_and_queues_no_tasks() {
+        let (lua, messages) = load_housing_lua_with_messages();
+
+        let player = lua.create_userdata(LuaPlayer::default()).unwrap();
+        let args = lua.create_table().unwrap();
+        args.set(1, "enter").unwrap();
+        args.set(2, "house").unwrap();
+        args.set(3, "extra").unwrap();
+
+        let on_command: Function = lua.globals().get("onCommand").unwrap();
+        on_command
+            .call::<()>((player.clone(), args, "housing"))
+            .unwrap();
+
+        let player = player.borrow::<LuaPlayer>().unwrap();
+        assert!(player.queued_tasks.is_empty());
+
+        let usage = messages.lock().join("\n");
+        assert!(usage.contains("Usage: !housing"));
+        assert!(usage.contains("!housing enter"));
+    }
+
+    #[test]
     fn housing_lua_no_arg_command_queues_default_local_house() {
         let lua = mlua::Lua::new();
         lua.globals().set("GM_RANK_DEBUG", 1).unwrap();
@@ -1587,7 +1694,7 @@ mod tests {
             )
             .unwrap();
         lua.load(include_str!(
-            "../../../../resources/scripts/commands/gm/Housing.lua"
+            "../../../../resources/scripts/commands/debug/Housing.lua"
         ))
         .exec()
         .unwrap();
@@ -1635,7 +1742,7 @@ mod tests {
             )
             .unwrap();
         lua.load(include_str!(
-            "../../../../resources/scripts/commands/gm/Housing.lua"
+            "../../../../resources/scripts/commands/debug/Housing.lua"
         ))
         .exec()
         .unwrap();
@@ -1689,7 +1796,7 @@ mod tests {
             )
             .unwrap();
         lua.load(include_str!(
-            "../../../../resources/scripts/commands/gm/Housing.lua"
+            "../../../../resources/scripts/commands/debug/Housing.lua"
         ))
         .exec()
         .unwrap();
@@ -1736,7 +1843,7 @@ mod tests {
             )
             .unwrap();
         lua.load(include_str!(
-            "../../../../resources/scripts/commands/gm/Housing.lua"
+            "../../../../resources/scripts/commands/debug/Housing.lua"
         ))
         .exec()
         .unwrap();
@@ -1775,7 +1882,7 @@ mod tests {
             )
             .unwrap();
         lua.load(include_str!(
-            "../../../../resources/scripts/commands/gm/Housing.lua"
+            "../../../../resources/scripts/commands/debug/Housing.lua"
         ))
         .exec()
         .unwrap();
@@ -1810,7 +1917,7 @@ mod tests {
             )
             .unwrap();
         lua.load(include_str!(
-            "../../../../resources/scripts/commands/gm/Housing.lua"
+            "../../../../resources/scripts/commands/debug/Housing.lua"
         ))
         .exec()
         .unwrap();
@@ -1856,7 +1963,7 @@ mod tests {
             )
             .unwrap();
         lua.load(include_str!(
-            "../../../../resources/scripts/commands/gm/Housing.lua"
+            "../../../../resources/scripts/commands/debug/Housing.lua"
         ))
         .exec()
         .unwrap();
@@ -1889,7 +1996,7 @@ mod tests {
             )
             .unwrap();
         lua.load(include_str!(
-            "../../../../resources/scripts/commands/gm/Housing.lua"
+            "../../../../resources/scripts/commands/debug/Housing.lua"
         ))
         .exec()
         .unwrap();
@@ -1922,7 +2029,7 @@ mod tests {
             )
             .unwrap();
         lua.load(include_str!(
-            "../../../../resources/scripts/commands/gm/Housing.lua"
+            "../../../../resources/scripts/commands/debug/Housing.lua"
         ))
         .exec()
         .unwrap();
@@ -1960,7 +2067,7 @@ mod tests {
             )
             .unwrap();
         lua.load(include_str!(
-            "../../../../resources/scripts/commands/gm/Housing.lua"
+            "../../../../resources/scripts/commands/debug/Housing.lua"
         ))
         .exec()
         .unwrap();
@@ -2116,7 +2223,7 @@ mod tests {
             )
             .unwrap();
         lua.load(include_str!(
-            "../../../../resources/scripts/commands/gm/Housing.lua"
+            "../../../../resources/scripts/commands/debug/Housing.lua"
         ))
         .exec()
         .unwrap();
@@ -2170,7 +2277,7 @@ mod tests {
             )
             .unwrap();
         lua.load(include_str!(
-            "../../../../resources/scripts/commands/gm/Housing.lua"
+            "../../../../resources/scripts/commands/debug/Housing.lua"
         ))
         .exec()
         .unwrap();
@@ -2245,7 +2352,7 @@ mod tests {
             )
             .unwrap();
         lua.load(include_str!(
-            "../../../../resources/scripts/commands/gm/Housing.lua"
+            "../../../../resources/scripts/commands/debug/Housing.lua"
         ))
         .exec()
         .unwrap();
@@ -2295,7 +2402,7 @@ mod tests {
             )
             .unwrap();
         lua.load(include_str!(
-            "../../../../resources/scripts/commands/gm/Housing.lua"
+            "../../../../resources/scripts/commands/debug/Housing.lua"
         ))
         .exec()
         .unwrap();

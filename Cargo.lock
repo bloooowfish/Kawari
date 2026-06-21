@@ -776,6 +776,7 @@ version = "7.51.1"
 dependencies = [
  "axum",
  "kawari",
+ "libsqlite3-sys",
  "minijinja",
  "serde",
  "serde_json",

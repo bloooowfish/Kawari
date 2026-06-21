@@ -23,6 +23,28 @@
     </div>
 </form>
 
+<form action="/housing" method="get" class="row g-2 mb-3">
+    <div class="col-md-4">
+        <label class="form-label" for="land_ident_lookup">Land Ident lookup</label>
+        <input class="form-control" type="number" id="land_ident_lookup" name="land_ident" value="{% if selected_land_ident %}{{ selected_land_ident }}{% endif %}" placeholder="101">
+    </div>
+    <div class="col-md-2 align-self-end">
+        <button type="submit" class="btn btn-outline-secondary">Lookup</button>
+    </div>
+</form>
+
+{% if summary_truncated %}
+<div class="alert alert-warning" role="alert">
+    <strong>Housing summary is truncated.</strong>
+    {% if summary_has_counts %}
+    Shown: {{ summary_returned }}. Total: {{ summary_total }}. Omitted: {{ summary_omitted }}.
+    {% else %}
+    Some summary counters were not returned.
+    {% endif %}
+    Use Land Ident lookup to load a specific estate.
+</div>
+{% endif %}
+
 <table class="table table-sm align-middle">
     <thead>
         <tr>
@@ -83,10 +105,12 @@
     <div class="col-md-3">
         <label class="form-label" for="selected_estate_name">Estate name</label>
         <input class="form-control form-control-sm" type="text" id="selected_estate_name" name="name" maxlength="{{ name_max_bytes }}" value="{{ selected_estate.estate_name }}">
+        <div class="form-text">{{ name_max_bytes }} bytes max; non-ASCII characters may use multiple bytes.</div>
     </div>
     <div class="col-md-6">
         <label class="form-label" for="selected_estate_greeting">Greeting</label>
         <input class="form-control form-control-sm" type="text" id="selected_estate_greeting" name="greeting" maxlength="{{ greeting_max_bytes }}" value="{{ selected_estate.greeting }}">
+        <div class="form-text">{{ greeting_max_bytes }} bytes max; non-ASCII characters may use multiple bytes.</div>
     </div>
     <div class="col-md-3 align-self-end">
         <button type="submit" class="btn btn-secondary btn-sm">Update Text</button>

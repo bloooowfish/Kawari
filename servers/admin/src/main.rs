@@ -78,7 +78,7 @@ async fn characters() -> Html<String> {
 
 #[derive(Deserialize, Default)]
 struct HousingQuery {
-    land_ident: Option<i64>,
+    land_ident: Option<String>,
     status: Option<String>,
     message: Option<String>,
 }
@@ -168,6 +168,29 @@ fn housing_query_status_message(query: &HousingQuery) -> Option<String> {
         (None, Some(message)) => Some(message.to_string()),
         (None, None) => None,
     }
+}
+
+fn housing_query_selection_and_status_message(
+    query: &HousingQuery,
+) -> (Option<i64>, Option<String>) {
+    let mut invalid_land_ident_message = None;
+    let selected_land_ident = housing_query_value(query.land_ident.as_deref()).and_then(|value| {
+        match value.parse::<i64>() {
+            Ok(land_ident) => Some(land_ident),
+            Err(_) => {
+                invalid_land_ident_message = Some(format!(
+                    "Invalid Land Ident \"{value}\". Enter a numeric Land Ident."
+                ));
+                None
+            }
+        }
+    });
+    let status_message = merge_status_messages(
+        invalid_land_ident_message,
+        housing_query_status_message(query),
+    );
+
+    (selected_land_ident, status_message)
 }
 
 fn percent_encode_query_value(value: &str) -> String {
@@ -276,6 +299,10 @@ fn housing_export_response_message(
 struct HousingSummaryView {
     estates: Vec<serde_json::Value>,
     status_message: Option<String>,
+    truncated: bool,
+    total: Option<u64>,
+    returned: Option<u64>,
+    omitted: Option<u64>,
 }
 
 #[derive(Debug, Default, PartialEq)]
@@ -301,7 +328,7 @@ fn parse_housing_summary_json(json: &str) -> HousingSummaryView {
     match serde_json::from_str::<serde_json::Value>(json) {
         Ok(serde_json::Value::Array(estates)) => HousingSummaryView {
             estates,
-            status_message: None,
+            ..Default::default()
         },
         Ok(serde_json::Value::Object(object)) => {
             let error = object.get("error").and_then(serde_json::Value::as_str);
@@ -309,6 +336,9 @@ fn parse_housing_summary_json(json: &str) -> HousingSummaryView {
                 .get("truncated")
                 .and_then(serde_json::Value::as_bool)
                 .unwrap_or(false);
+            let total = object.get("total").and_then(serde_json::Value::as_u64);
+            let returned = object.get("returned").and_then(serde_json::Value::as_u64);
+            let omitted = object.get("omitted").and_then(serde_json::Value::as_u64);
 
             if let Some(estates) = object
                 .get("estates")
@@ -329,6 +359,10 @@ fn parse_housing_summary_json(json: &str) -> HousingSummaryView {
                 return HousingSummaryView {
                     estates: estates.clone(),
                     status_message,
+                    truncated,
+                    total,
+                    returned,
+                    omitted,
                 };
             }
 
@@ -341,15 +375,21 @@ fn parse_housing_summary_json(json: &str) -> HousingSummaryView {
             HousingSummaryView {
                 estates: Vec::new(),
                 status_message,
+                truncated,
+                total,
+                returned,
+                omitted,
             }
         }
         Ok(_) => HousingSummaryView {
             estates: Vec::new(),
             status_message: Some("Housing summary returned an unexpected JSON value.".to_string()),
+            ..Default::default()
         },
         Err(error) => HousingSummaryView {
             estates: Vec::new(),
             status_message: Some(format!("Failed to parse housing summary JSON: {error}")),
+            ..Default::default()
         },
     }
 }
@@ -376,6 +416,7 @@ async fn request_housing_summary() -> HousingSummaryView {
             status_message: Some(
                 "World server did not respond to housing summary request.".to_string(),
             ),
+            ..Default::default()
         }
     }
 }
@@ -427,6 +468,8 @@ async fn render_housing_page(
         None
     };
     let status_message = merge_status_messages(status_message, summary.status_message);
+    let summary_has_counts =
+        summary.total.is_some() && summary.returned.is_some() && summary.omitted.is_some();
 
     Html(
         template
@@ -436,6 +479,11 @@ async fn render_housing_page(
                 selected_estate => selected_detail.as_ref().and_then(|detail| detail.selected_estate.clone()),
                 selected_detail_json => selected_detail.map(|detail| detail.pretty_json),
                 status_message,
+                summary_truncated => summary.truncated,
+                summary_has_counts,
+                summary_total => summary.total,
+                summary_returned => summary.returned,
+                summary_omitted => summary.omitted,
                 name_max_bytes => HOUSING_ADMIN_NAME_MAX_BYTES,
                 greeting_max_bytes => HOUSING_ADMIN_GREETING_MAX_BYTES,
             })
@@ -444,7 +492,8 @@ async fn render_housing_page(
 }
 
 async fn housing(Query(query): Query<HousingQuery>) -> Html<String> {
-    render_housing_page(query.land_ident, housing_query_status_message(&query)).await
+    let (selected_land_ident, status_message) = housing_query_selection_and_status_message(&query);
+    render_housing_page(selected_land_ident, status_message).await
 }
 
 async fn reset_housing_furniture(Form(input): Form<HousingLandIdentForm>) -> Redirect {
@@ -627,7 +676,8 @@ async fn main() {
 #[cfg(test)]
 mod tests {
     use axum::{
-        http::{StatusCode, header},
+        extract::Query,
+        http::{StatusCode, Uri, header},
         response::IntoResponse,
     };
     use kawari::ipc::kawari::{CustomIpcData, CustomIpcSegment};
@@ -636,9 +686,10 @@ mod tests {
 
     use super::{
         HousingQuery, HousingUpdateTextForm, build_import_housing_estate_request,
-        housing_export_response_message, housing_query_status_message, housing_redirect_after_post,
-        housing_redirect_location, parse_housing_detail_response, parse_housing_summary_json,
-        setup_default_environment, update_housing_estate_text_warning,
+        housing_export_response_message, housing_query_selection_and_status_message,
+        housing_query_status_message, housing_redirect_after_post, housing_redirect_location,
+        parse_housing_detail_response, parse_housing_summary_json, setup_default_environment,
+        update_housing_estate_text_warning,
     };
 
     static CWD_LOCK: Mutex<()> = Mutex::new(());
@@ -680,6 +731,10 @@ mod tests {
         assert_eq!(summary.estates.len(), 1);
         assert_eq!(summary.estates[0]["land_ident"], 101);
         assert_eq!(summary.status_message, None);
+        assert!(!summary.truncated);
+        assert_eq!(summary.total, None);
+        assert_eq!(summary.returned, None);
+        assert_eq!(summary.omitted, None);
     }
 
     #[test]
@@ -694,6 +749,10 @@ mod tests {
             summary.status_message,
             Some("Housing summary was truncated to fit the admin IPC payload limit.".to_string())
         );
+        assert!(summary.truncated);
+        assert_eq!(summary.total, Some(10));
+        assert_eq!(summary.returned, Some(1));
+        assert_eq!(summary.omitted, Some(9));
     }
 
     #[test]
@@ -823,7 +882,7 @@ mod tests {
     #[test]
     fn housing_query_status_message_uses_query_message_with_status_label() {
         let query = HousingQuery {
-            land_ident: Some(101),
+            land_ident: Some("101".to_string()),
             status: Some("success".to_string()),
             message: Some("Updated estate text for 101.".to_string()),
         };
@@ -832,6 +891,24 @@ mod tests {
             housing_query_status_message(&query),
             Some("Success: Updated estate text for 101.".to_string())
         );
+    }
+
+    #[test]
+    fn housing_query_invalid_land_ident_produces_inline_error_without_selection() {
+        let uri: Uri = "/housing?land_ident=bad&status=success&message=Updated"
+            .parse()
+            .unwrap();
+        let Query(query) =
+            Query::<HousingQuery>::try_from_uri(&uri).expect("query should not reject land_ident");
+        let (selected_land_ident, status_message) =
+            housing_query_selection_and_status_message(&query);
+
+        assert_eq!(selected_land_ident, None);
+        let status_message =
+            status_message.expect("invalid land_ident should render inline status");
+        assert!(status_message.contains("Invalid Land Ident"));
+        assert!(status_message.contains("bad"));
+        assert!(status_message.contains("Success: Updated"));
     }
 
     #[test]
@@ -877,6 +954,11 @@ mod tests {
                 selected_estate => Option::<serde_json::Value>::None,
                 selected_detail_json => Option::<String>::None,
                 status_message => Some("<script>alert(1)</script>".to_string()),
+                summary_truncated => false,
+                summary_has_counts => false,
+                summary_total => Option::<u64>::None,
+                summary_returned => Option::<u64>::None,
+                summary_omitted => Option::<u64>::None,
                 name_max_bytes => 20,
                 greeting_max_bytes => 192,
             })
@@ -884,6 +966,81 @@ mod tests {
 
         assert!(rendered.contains("&lt;script&gt;alert(1)&lt;&#x2f;script&gt;"));
         assert!(!rendered.contains("<script>alert(1)</script>"));
+    }
+
+    fn render_admin_housing_template(
+        selected_land_ident: Option<i64>,
+        summary_truncated: bool,
+        summary_total: Option<u64>,
+        summary_returned: Option<u64>,
+        summary_omitted: Option<u64>,
+        selected_estate: Option<serde_json::Value>,
+    ) -> String {
+        let environment = test_template_environment();
+        let template = environment.get_template("admin_housing.html").unwrap();
+        let summary_has_counts =
+            summary_total.is_some() && summary_returned.is_some() && summary_omitted.is_some();
+
+        template
+            .render(context! {
+                estates => Vec::<serde_json::Value>::new(),
+                selected_land_ident,
+                selected_estate,
+                selected_detail_json => Option::<String>::None,
+                status_message => Option::<String>::None,
+                summary_truncated,
+                summary_has_counts,
+                summary_total,
+                summary_returned,
+                summary_omitted,
+                name_max_bytes => 20,
+                greeting_max_bytes => 192,
+            })
+            .unwrap()
+    }
+
+    #[test]
+    fn admin_housing_truncated_summary_shows_lookup_warning() {
+        let rendered =
+            render_admin_housing_template(Some(101), true, Some(10), Some(1), Some(9), None);
+
+        assert!(rendered.contains("Housing summary is truncated"));
+        assert!(rendered.contains("Shown: 1"));
+        assert!(rendered.contains("Total: 10"));
+        assert!(rendered.contains("Omitted: 9"));
+        assert!(rendered.contains("Land Ident lookup"));
+        assert!(rendered.contains(r#"name="land_ident""#));
+        assert!(rendered.contains(r#"value="101""#));
+    }
+
+    #[test]
+    fn admin_housing_truncated_summary_without_counters_shows_generic_guidance() {
+        let rendered = render_admin_housing_template(None, true, None, None, None, None);
+
+        assert!(rendered.contains("Housing summary is truncated"));
+        assert!(!rendered.contains("Shown: ."));
+        assert!(!rendered.contains("Total: ."));
+        assert!(!rendered.contains("Omitted: ."));
+        assert!(rendered.contains("Use Land Ident lookup to load a specific estate."));
+    }
+
+    #[test]
+    fn admin_housing_selected_estate_text_copy_mentions_byte_limits() {
+        let rendered = render_admin_housing_template(
+            Some(101),
+            false,
+            None,
+            None,
+            None,
+            Some(serde_json::json!({
+                "land_ident": 101,
+                "estate_name": "Test Estate",
+                "greeting": "Welcome.",
+            })),
+        );
+
+        assert!(rendered.contains("20 bytes max"));
+        assert!(rendered.contains("192 bytes max"));
     }
 
     #[test]
