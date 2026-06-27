@@ -1,5 +1,7 @@
 use kawari::{common::ContainerType, ipc::zone::HousingItemOperation};
 
+const PLAYER_INVENTORY_PAGE_SLOT_COUNT: u16 = 35;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct HousingItemOperationHint {
     pub source_container: ContainerType,
@@ -35,7 +37,7 @@ fn source_hint(action: &HousingItemOperation) -> Option<(u16, u16, u16)> {
             .get(container_index)
             .zip(action.raw.get(slot_index))
             .and_then(|(&container, &slot)| {
-                (container <= 3 && slot != u16::MAX).then_some((
+                (container <= 3 && slot < PLAYER_INVENTORY_PAGE_SLOT_COUNT).then_some((
                     target_slot as u16,
                     container,
                     slot,
@@ -91,6 +93,34 @@ mod tests {
         let operation = HousingItemOperation {
             raw: [
                 0, 0, 0, 0, 0, 9999, 9999, 9999, 9999, 9999, 9999, 9999, 9999, 9999, 65535, 65535,
+                65535, 65535, 65535, 65535, 65535, 65535, 65535, 65535,
+            ],
+        };
+
+        assert!(housing_item_operation_hint(&operation).is_none());
+    }
+
+    #[test]
+    fn housing_item_operation_hint_accepts_last_inventory_source_slot() {
+        let operation = HousingItemOperation {
+            raw: [
+                0, 0, 0, 0, 0, 9999, 9999, 9999, 9999, 9999, 9999, 9999, 9999, 9999, 34, 65535,
+                65535, 65535, 65535, 65535, 65535, 65535, 65535, 65535,
+            ],
+        };
+
+        let hint = housing_item_operation_hint(&operation).unwrap();
+
+        assert_eq!(hint.source_container, ContainerType::Inventory0);
+        assert_eq!(hint.source_slot, 34);
+        assert_eq!(hint.target_appearance_slot, 0);
+    }
+
+    #[test]
+    fn housing_item_operation_hint_rejects_out_of_range_inventory_source_slot() {
+        let operation = HousingItemOperation {
+            raw: [
+                0, 0, 0, 0, 0, 9999, 9999, 9999, 9999, 9999, 9999, 9999, 9999, 9999, 35, 65535,
                 65535, 65535, 65535, 65535, 65535, 65535, 65535, 65535,
             ],
         };
