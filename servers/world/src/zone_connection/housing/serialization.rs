@@ -2,8 +2,8 @@ use glam::Vec3;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use crate::inventory::{
-    HousingInventory, Item, housing_container_slot_capacity, interior_placed_containers,
-    interior_storeroom_containers,
+    HousingInventory, Item, flat_slot_for_container, housing_container_slot_capacity,
+    interior_placed_containers, interior_storeroom_containers,
 };
 use crate::{
     HousingEstate, HousingFurniture,
@@ -389,24 +389,46 @@ pub(super) fn build_furniture_lists(
         );
     }
 
-    let total_slots = slot_capacity.unwrap_or_else(|| rows.len().max(1));
+    let total_slots = slot_capacity
+        .unwrap_or_else(|| {
+            rows.iter()
+                .filter_map(flat_furniture_slot_for_row)
+                .map(|slot| slot + 1)
+                .max()
+                .unwrap_or_default()
+        })
+        .min(max_rows);
     let list_count = total_slots.div_ceil(Furniture::COUNT).max(1);
     let count = list_count.min(u8::MAX as usize) as u8;
+    let mut furniture_slots = vec![Furniture::default(); total_slots];
+
+    for row in rows {
+        let Some(slot) = flat_furniture_slot_for_row(row) else {
+            continue;
+        };
+        let Some(furniture) = furniture_slots.get_mut(slot) else {
+            continue;
+        };
+
+        *furniture = furniture_from_row(row);
+    }
 
     (0..list_count)
         .take(u8::MAX as usize)
         .map(|index| {
             let start = index * Furniture::COUNT;
-            let end = (start + Furniture::COUNT)
-                .min(rows.len())
-                .min(max_send_rows);
-            let chunk = if start < end { &rows[start..end] } else { &[] };
+            let end = (start + Furniture::COUNT).min(furniture_slots.len());
+            let chunk = if start < end {
+                &furniture_slots[start..end]
+            } else {
+                &[]
+            };
             FurnitureList {
                 id: house_id,
                 index: index as u8,
                 count,
                 unk2: furniture_list_slot_count(indoors, slot_capacity, index),
-                furniture: chunk.iter().map(furniture_from_row).collect(),
+                furniture: chunk.to_vec(),
                 ..Default::default()
             }
         })
@@ -421,6 +443,15 @@ fn furniture_from_row(row: &HousingFurniture) -> Furniture {
         rotation: row.rotation,
         position: Position(Vec3::new(row.pos_x, row.pos_y, row.pos_z)),
     }
+}
+
+fn flat_furniture_slot_for_row(row: &HousingFurniture) -> Option<usize> {
+    if row.slot < 0 {
+        return None;
+    }
+
+    let container = housing_container_type_from_i32(row.container_type)?;
+    flat_slot_for_container(container, row.slot as u16).map(usize::from)
 }
 
 fn furniture_list_slot_count(indoors: bool, slot_capacity: Option<usize>, list_index: usize) -> u8 {

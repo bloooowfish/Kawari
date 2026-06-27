@@ -673,6 +673,14 @@ mod tests {
         }
     }
 
+    fn indoor_furniture_row_at_flat_slot(catalog_id: i32, flat_slot: u16) -> HousingFurniture {
+        let (container, slot) = indoor_container_for_flat_slot(flat_slot).unwrap();
+        let mut row = furniture_row(catalog_id, Position::default(), 0.0);
+        row.container_type = container as i32;
+        row.slot = slot as i32;
+        row
+    }
+
     fn estate_row_for_plot(plot_index: i32, flags: i32, plot_size: PlotSize) -> HousingEstate {
         HousingEstate {
             house_id: house_id(plot_index as u8, 0, false).to_u64() as i64,
@@ -851,8 +859,13 @@ mod tests {
     fn build_furniture_lists_maps_single_furniture_row() {
         let id = house_id(4, 0, false);
         let position = Position(Vec3::new(1.0, 2.0, 3.0));
+        let mut row = indoor_furniture_row_at_flat_slot(123, 0);
+        row.pos_x = position.0.x;
+        row.pos_y = position.0.y;
+        row.pos_z = position.0.z;
+        row.rotation = 1.25;
 
-        let lists = build_furniture_lists(id, &[furniture_row(123, position, 1.25)], true, None);
+        let lists = build_furniture_lists(id, &[row], true, None);
 
         assert_eq!(lists.len(), 1);
         assert_eq!(lists[0].furniture.len(), 1);
@@ -864,7 +877,9 @@ mod tests {
     #[test]
     fn build_furniture_lists_chunks_after_one_hundred_rows() {
         let id = house_id(4, 0, false);
-        let rows = vec![furniture_row(123, Position::default(), 0.0); 101];
+        let rows = (0..101)
+            .map(|slot| indoor_furniture_row_at_flat_slot(123, slot))
+            .collect::<Vec<_>>();
 
         let lists = build_furniture_lists(id, &rows, true, None);
 
@@ -878,9 +893,42 @@ mod tests {
     }
 
     #[test]
+    fn build_furniture_lists_preserves_sparse_indoor_flat_slots() {
+        let id = house_id(4, 0, false);
+        let mut row = furniture_row(777, Position(Vec3::new(1.0, 2.0, 3.0)), 1.5);
+        row.container_type = ContainerType::HousingInteriorPlacedItems2 as i32;
+        row.slot = 2;
+
+        let lists = build_furniture_lists(id, &[row], true, Some(150));
+
+        assert_eq!(lists.len(), 2);
+        assert_eq!(lists[0].furniture.len(), 100);
+        assert!(
+            lists[0].furniture[..52]
+                .iter()
+                .all(|furniture| furniture.id == 0)
+        );
+        assert_eq!(lists[0].furniture[52].id, 777);
+        assert_eq!(
+            lists[0].furniture[52].position,
+            Position(Vec3::new(1.0, 2.0, 3.0))
+        );
+        assert_eq!(lists[0].furniture[52].rotation, 1.5);
+        assert!(
+            lists[0].furniture[53..]
+                .iter()
+                .all(|furniture| furniture.id == 0)
+        );
+        assert_eq!(lists[1].furniture.len(), 50);
+        assert!(lists[1].furniture.iter().all(|furniture| furniture.id == 0));
+    }
+
+    #[test]
     fn build_furniture_lists_uses_indoor_slot_capacity() {
         let id = house_id(4, 0, false);
-        let rows = vec![furniture_row(123, Position::default(), 0.0); 300];
+        let rows = (0..300)
+            .map(|slot| indoor_furniture_row_at_flat_slot(123, slot))
+            .collect::<Vec<_>>();
 
         let lists = build_furniture_lists(id, &rows, true, Some(450));
 
@@ -892,14 +940,18 @@ mod tests {
         assert_eq!(lists[0].furniture.len(), 100);
         assert_eq!(lists[1].furniture.len(), 100);
         assert_eq!(lists[2].furniture.len(), 100);
-        assert_eq!(lists[3].furniture.len(), 0);
-        assert_eq!(lists[4].furniture.len(), 0);
+        assert_eq!(lists[3].furniture.len(), 100);
+        assert!(lists[3].furniture.iter().all(|furniture| furniture.id == 0));
+        assert_eq!(lists[4].furniture.len(), 50);
+        assert!(lists[4].furniture.iter().all(|furniture| furniture.id == 0));
     }
 
     #[test]
     fn build_furniture_lists_large_capacity_matches_six_hundred_slots() {
         let id = house_id(4, 0, false);
-        let rows = vec![furniture_row(123, Position::default(), 0.0); 598];
+        let rows = (0..598)
+            .map(|slot| indoor_furniture_row_at_flat_slot(123, slot))
+            .collect::<Vec<_>>();
 
         let lists = build_furniture_lists(id, &rows, true, Some(600));
 
@@ -907,7 +959,17 @@ mod tests {
         assert!(lists.iter().all(|list| list.count == 6));
         assert!(lists.iter().all(|list| list.unk2 == 100));
         assert_eq!(lists[0].furniture.len(), 100);
-        assert_eq!(lists[5].furniture.len(), 98);
+        assert_eq!(lists[5].furniture.len(), 100);
+        assert!(
+            lists[5].furniture[..98]
+                .iter()
+                .all(|furniture| furniture.id == 123)
+        );
+        assert!(
+            lists[5].furniture[98..]
+                .iter()
+                .all(|furniture| furniture.id == 0)
+        );
     }
 
     #[test]
