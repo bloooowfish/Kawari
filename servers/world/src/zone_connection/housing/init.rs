@@ -197,6 +197,15 @@ impl ZoneConnection {
             },
         )
         .await;
+        if should_finish_housing_object_data_after_initial_indoor_lists(
+            TerritoryIntendedUse::HousingIndoor,
+            self.pending_housing_indoor_furniture_list_tail,
+        ) {
+            self.send_housing_object_data_value_sets(&furniture_rows)
+                .await;
+            self.send_housing_interior_ready(active_estate.house_id)
+                .await;
+        }
         if hide_chambers_door {
             self.actor_control_self(ActorControlCategory::HideAdditionalChambersDoor {})
                 .await;
@@ -424,6 +433,13 @@ pub(super) fn should_defer_housing_indoor_finish_loading(
     pending_tail: bool,
 ) -> bool {
     intended_use == TerritoryIntendedUse::HousingIndoor && pending_tail
+}
+
+pub(super) fn should_finish_housing_object_data_after_initial_indoor_lists(
+    intended_use: TerritoryIntendedUse,
+    pending_tail: bool,
+) -> bool {
+    intended_use == TerritoryIntendedUse::HousingIndoor && !pending_tail
 }
 
 pub(super) fn housing_interior_ready_primary_id(house_id: HouseId) -> u64 {

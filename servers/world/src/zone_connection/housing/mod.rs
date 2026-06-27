@@ -599,6 +599,7 @@ mod tests {
         housing_furniture_objects_from_rows, housing_indoor_init_needs_resolution,
         housing_interior_ready_primary_id, housing_object_data_value_sets_from_rows,
         is_interior_placed_furniture_row, should_defer_housing_indoor_finish_loading,
+        should_finish_housing_object_data_after_initial_indoor_lists,
         should_hide_additional_chambers_door, should_sync_indoor_overlays_after_loading,
         should_sync_indoor_overlays_after_remodel, should_sync_indoor_overlays_on_finish_zoning,
     };
@@ -980,6 +981,28 @@ mod tests {
         assert_eq!(deferred_housing_furniture_list_start_index(true, 3), 3);
         assert_eq!(initial_housing_furniture_list_count(false, 8), 8);
         assert_eq!(deferred_housing_furniture_list_start_index(false, 8), 8);
+    }
+
+    #[test]
+    fn object_data_finishes_after_initial_indoor_lists_only_without_tail() {
+        assert!(
+            should_finish_housing_object_data_after_initial_indoor_lists(
+                TerritoryIntendedUse::HousingIndoor,
+                false
+            )
+        );
+        assert!(
+            !should_finish_housing_object_data_after_initial_indoor_lists(
+                TerritoryIntendedUse::HousingIndoor,
+                true
+            )
+        );
+        assert!(
+            !should_finish_housing_object_data_after_initial_indoor_lists(
+                TerritoryIntendedUse::HousingOutdoor,
+                false
+            )
+        );
     }
 
     #[test]
