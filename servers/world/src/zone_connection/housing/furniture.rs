@@ -615,17 +615,12 @@ impl ZoneConnection {
             TerritoryIntendedUse::HousingOutdoor => ContainerType::HousingExteriorAppearance,
             _ => return None,
         };
-        let target_slot = housing_appearance_marker_target_slot(
+        let target_slot = housing_appearance_target_slot(
             item_ui_category,
             intended_use,
             is_apartment,
             marker_target_slot,
-        )
-        .unwrap_or(default_housing_appearance_target_slot(
-            item_ui_category,
-            intended_use,
-            is_apartment,
-        )?);
+        )?;
 
         Some((target_container, target_slot))
     }
@@ -1548,15 +1543,36 @@ pub(super) fn housing_appearance_marker_target_slot(
 
     let expected_category = match intended_use {
         TerritoryIntendedUse::HousingIndoor => {
-            housing_interior_item_ui_category_for_slot(target_slot)
+            housing_interior_field_for_appearance_slot(target_slot)
+                .and_then(|_| housing_interior_item_ui_category_for_slot(target_slot))
         }
         TerritoryIntendedUse::HousingOutdoor => {
-            housing_exterior_item_ui_category_for_slot(target_slot)
+            housing_exterior_field_for_appearance_slot(target_slot)
+                .and_then(|_| housing_exterior_item_ui_category_for_slot(target_slot))
         }
         _ => None,
     };
 
     (expected_category == Some(item_ui_category)).then_some(target_slot)
+}
+
+pub(super) fn housing_appearance_target_slot(
+    item_ui_category: u8,
+    intended_use: TerritoryIntendedUse,
+    is_apartment: bool,
+    marker_target_slot: Option<u16>,
+) -> Option<u16> {
+    match marker_target_slot {
+        Some(_) => housing_appearance_marker_target_slot(
+            item_ui_category,
+            intended_use,
+            is_apartment,
+            marker_target_slot,
+        ),
+        None => {
+            default_housing_appearance_target_slot(item_ui_category, intended_use, is_apartment)
+        }
+    }
 }
 
 fn housing_appearance_item_data(game_data: &mut GameData, item: Item) -> Option<(u32, u8)> {

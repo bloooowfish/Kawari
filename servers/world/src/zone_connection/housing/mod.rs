@@ -40,11 +40,11 @@ use self::furniture::{
     ITEM_UI_CATEGORY_INTERIOR_WALL, ITEM_UI_CATEGORY_PLACARD, ITEM_UI_CATEGORY_ROOF,
     ITEM_UI_CATEGORY_ROOF_DECORATION, ITEM_UI_CATEGORY_WINDOW,
     default_housing_appearance_target_slot, housing_appearance_marker_target_slot,
-    housing_exterior_appearance_slot_specs, housing_exterior_color_field_for_appearance_slot,
-    housing_exterior_field_for_appearance_slot, housing_exterior_item_ui_category_for_slot,
-    housing_interior_appearance_slot_specs, housing_interior_field_for_appearance_slot,
-    housing_interior_item_ui_category_for_slot, placed_container_for_flat_slot,
-    should_broadcast_housing_item_removal,
+    housing_appearance_target_slot, housing_exterior_appearance_slot_specs,
+    housing_exterior_color_field_for_appearance_slot, housing_exterior_field_for_appearance_slot,
+    housing_exterior_item_ui_category_for_slot, housing_interior_appearance_slot_specs,
+    housing_interior_field_for_appearance_slot, housing_interior_item_ui_category_for_slot,
+    placed_container_for_flat_slot, should_broadcast_housing_item_removal,
 };
 #[allow(unused_imports)]
 pub use self::furniture::{
@@ -1482,6 +1482,54 @@ mod tests {
                 Some(5),
             ),
             None
+        );
+    }
+
+    #[test]
+    fn housing_marker_target_slot_rejects_house_interior_slot_without_persisted_field() {
+        assert_eq!(
+            housing_appearance_marker_target_slot(
+                ITEM_UI_CATEGORY_INTERIOR_WALL,
+                TerritoryIntendedUse::HousingIndoor,
+                false,
+                Some(9),
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn housing_marker_target_slot_rejects_outdoor_slot_without_persisted_field() {
+        assert_eq!(
+            housing_appearance_marker_target_slot(
+                ITEM_UI_CATEGORY_ROOF,
+                TerritoryIntendedUse::HousingOutdoor,
+                false,
+                Some(0),
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn housing_marker_target_slot_uses_default_only_when_marker_is_absent() {
+        assert_eq!(
+            housing_appearance_target_slot(
+                ITEM_UI_CATEGORY_INTERIOR_WALL,
+                TerritoryIntendedUse::HousingIndoor,
+                false,
+                Some(9),
+            ),
+            None
+        );
+        assert_eq!(
+            housing_appearance_target_slot(
+                ITEM_UI_CATEGORY_INTERIOR_WALL,
+                TerritoryIntendedUse::HousingIndoor,
+                false,
+                None,
+            ),
+            Some(3)
         );
     }
 
