@@ -272,6 +272,7 @@ async fn initial_setup(
                     offered_teleport: None,
                     is_trading: false,
                     director_vars: None,
+                    dyeing_information: None,
                 };
 
                 // Handle setup before passing off control to the zone connection.
@@ -801,9 +802,9 @@ async fn process_packet(
                                         expansion,
                                         name: connection.player_data.character.name.clone(),
                                         actor_id: connection.player_data.character.actor_id,
-                                        race: chara_make.customize.race,
-                                        gender: chara_make.customize.gender,
-                                        tribe: chara_make.customize.subrace,
+                                        race: chara_make.customize.race as u8,
+                                        gender: chara_make.customize.gender as u8,
+                                        tribe: chara_make.customize.tribe as u8,
                                         city_state,
                                         nameday_month: chara_make.birth_month as u8,
                                         nameday_day: chara_make.birth_day as u8,
@@ -1229,46 +1230,48 @@ async fn process_packet(
                                 ClientTriggerCommand::DirectorTrigger {
                                     handler_id,
                                     trigger,
-                                    arg,
                                 } => {
                                     // TODO: move to server state? why is this here?
 
                                     match trigger {
-                                        DirectorTrigger::Sync => {
+                                        DirectorTrigger::Sync { .. } => {
                                             // Always send a sync response for now
                                             connection
                                                 .actor_control_self(
                                                     ActorControlCategory::DirectorEvent {
                                                         handler_id,
-                                                        event: DirectorEvent::SyncResponse,
-                                                        arg1: 1,
-                                                        arg2: 0,
-                                                        arg3: 0,
-                                                        arg4: 0,
+                                                        event: DirectorEvent::SyncResponse {
+                                                            arg1: 1,
+                                                            arg2: 0,
+                                                            arg3: 0,
+                                                            arg4: 0,
+                                                        },
                                                     },
                                                 )
                                                 .await;
                                         }
-                                        DirectorTrigger::SummonStrikingDummy => {
+                                        DirectorTrigger::SummonStrikingDummy { .. } => {
                                             tracing::info!(
                                                 "Spawning a striking dummy is unsupported!"
                                             );
                                         }
-                                        DirectorTrigger::GoldSaucerUnk1 => {
+                                        DirectorTrigger::GoldSaucerUnk1 { .. } => {
                                             // dummied out
                                         }
-                                        DirectorTrigger::GoldSaucerUnk2 => {
+                                        DirectorTrigger::GoldSaucerUnk2 { .. } => {
                                             // hardcoded for now
 
                                             connection
                                                 .actor_control_self(
                                                     ActorControlCategory::DirectorEvent {
                                                         handler_id,
-                                                        event: DirectorEvent::Unknown(9),
-                                                        arg1: 74,
-                                                        arg2: 1,
-                                                        arg3: 0,
-                                                        arg4: 0,
+                                                        event: DirectorEvent::Unknown {
+                                                            id: 9,
+                                                            arg1: 74,
+                                                            arg2: 1,
+                                                            arg3: 0,
+                                                            arg4: 0,
+                                                        },
                                                     },
                                                 )
                                                 .await;
@@ -1277,11 +1280,13 @@ async fn process_packet(
                                                 .actor_control_self(
                                                     ActorControlCategory::DirectorEvent {
                                                         handler_id,
-                                                        event: DirectorEvent::Unknown(6),
-                                                        arg1: 7773571, // TODO: hardcoded to the air force one attendant for now
-                                                        arg2: 1775917801,
-                                                        arg3: 0,
-                                                        arg4: 0,
+                                                        event: DirectorEvent::Unknown {
+                                                            id: 6,
+                                                            arg1: 7773571, // TODO: hardcoded to the air force one attendant for now
+                                                            arg2: 1775917801,
+                                                            arg3: 0,
+                                                            arg4: 0,
+                                                        },
                                                     },
                                                 )
                                                 .await;
@@ -1290,11 +1295,13 @@ async fn process_packet(
                                                 .actor_control_self(
                                                     ActorControlCategory::DirectorEvent {
                                                         handler_id,
-                                                        event: DirectorEvent::Unknown(11),
-                                                        arg1: 3,
-                                                        arg2: 0,
-                                                        arg3: 0,
-                                                        arg4: 0,
+                                                        event: DirectorEvent::Unknown {
+                                                            id: 11,
+                                                            arg1: 3,
+                                                            arg2: 0,
+                                                            arg3: 0,
+                                                            arg4: 0,
+                                                        },
                                                     },
                                                 )
                                                 .await;
@@ -1307,12 +1314,12 @@ async fn process_packet(
                                                 ))
                                                 .await;
                                         }
-                                        DirectorTrigger::VariantVote => {
+                                        DirectorTrigger::VariantVote { route } => {
                                             connection
                                                 .handle
                                                 .send(ToServer::VariantVote(
                                                     connection.player_data.character.actor_id,
-                                                    arg,
+                                                    route,
                                                 ))
                                                 .await;
 
@@ -1321,16 +1328,12 @@ async fn process_packet(
                                                     ActorControlCategory::DirectorEvent {
                                                         handler_id,
                                                         event: DirectorEvent::HideVariantVoteRoute,
-                                                        arg1: 0,
-                                                        arg2: 0,
-                                                        arg3: 0,
-                                                        arg4: 0,
                                                     },
                                                 )
                                                 .await;
                                         }
                                         _ => tracing::info!(
-                                            "DirectorTrigger: {handler_id} {trigger:?} {arg}"
+                                            "DirectorTrigger: {handler_id} {trigger:?}"
                                         ),
                                     }
                                 }
@@ -2687,7 +2690,6 @@ async fn process_packet(
                             }
                         }
                         ClientZoneIpcData::EventReturnHandler2(handler) => {
-                            // TODO: merge all implementations
                             tracing::info!(message = "Event returned", handler_id = %handler.handler_id, error_code = handler.error_code, scene = handler.scene, params = ?&handler.params[..handler.num_results as usize]);
 
                             if let Some(event) = events.last() {
@@ -3268,8 +3270,13 @@ async fn process_packet(
                             let ipc = ServerZoneIpcSegment::new(search_info);
                             connection.send_ipc_self(ipc).await;
                         }
-                        ClientZoneIpcData::RequestAdventurerPlate { .. } => {
-                            tracing::info!("Requesting adventurer plates is unimplemented");
+                        ClientZoneIpcData::RequestAdventurerPlate { actor_id, .. } => {
+                            let ipc;
+                            {
+                                let mut database = connection.database.lock();
+                                ipc = database.lookup_adventurer_plate(*actor_id);
+                            }
+                            connection.send_ipc_self(ipc).await;
                         }
                         ClientZoneIpcData::SearchPlayers {
                             classjobs,
@@ -3836,7 +3843,7 @@ async fn process_packet(
                                             connection.id,
                                             connection.player_data.character.actor_id,
                                             *param1,
-                                            Some((WarpType::InstanceContent, 15, 2, 4)),
+                                            Some((WarpType::Event, 15, 2, 4)),
                                         ))
                                         .await;
                                 }
@@ -4039,6 +4046,9 @@ async fn process_packet(
                                     connection.player_data.character.actor_id,
                                 ))
                                 .await;
+                        }
+                        ClientZoneIpcData::DyeInformation(dye_information) => {
+                            connection.dyeing_information = Some(dye_information.clone());
                         }
                         ClientZoneIpcData::Unknown { unk } => {
                             tracing::warn!(

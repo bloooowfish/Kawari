@@ -378,4 +378,5 @@ pub enum LuaTask {
     Call {
         name: String,
     },
+    FinishDyeing {},
 }

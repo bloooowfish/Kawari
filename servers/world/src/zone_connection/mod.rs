@@ -20,8 +20,8 @@ use kawari::{
     config::WorldConfig,
     ipc::zone::{
         CWLSMemberListEntry, ClientTriggerCommand, ClientZoneIpcSegment, Condition, Conditions,
-        ContentRegistrationFlags, GrandCompany as IpcGrandCompany, LetterPreview, PlayerEntry,
-        ServerZoneIpcData, ServerZoneIpcSegment,
+        ContentRegistrationFlags, DyeInformation, GrandCompany as IpcGrandCompany, LetterPreview,
+        PlayerEntry, ServerZoneIpcData, ServerZoneIpcSegment,
     },
     opcodes::ServerZoneIpcType,
     packet::{
@@ -213,6 +213,8 @@ pub struct ZoneConnection {
     pub is_trading: bool,
     /// For the crappy setup_director() function right now.
     pub director_vars: Option<ServerZoneIpcSegment>,
+    /// Current dye action information.
+    pub dyeing_information: Option<DyeInformation>,
 }
 
 fn take_player_spawn_location_from_parts(

@@ -736,6 +736,10 @@ impl LuaPlayer {
     fn call(&mut self, name: String) {
         self.queued_tasks.push(LuaTask::Call { name });
     }
+
+    fn finish_dyeing(&mut self) {
+        self.queued_tasks.push(LuaTask::FinishDyeing {});
+    }
 }
 
 impl UserData for LuaPlayer {
@@ -1348,6 +1352,10 @@ impl UserData for LuaPlayer {
         });
         methods.add_method_mut("call", |_, this, name: String| {
             this.call(name);
+            Ok(())
+        });
+        methods.add_method_mut("finish_dyeing", |_, this, _: ()| {
+            this.finish_dyeing();
             Ok(())
         });
     }

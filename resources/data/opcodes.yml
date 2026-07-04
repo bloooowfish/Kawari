@@ -759,6 +759,10 @@ ServerZoneIpcType:
   comment: Supposedly, from FFXIVOpcodes.
   opcode: 836
   size: 640
+- name: AdventurerPlate
+  comment: Adventurer plate information.
+  opcode: 482
+  size: 480
 ClientZoneIpcType:
 - name: InitRequest
   comment: Sent by the client when they successfully initialize with the server, and they need several bits of information (e.g. what zone to load.)
@@ -1143,6 +1147,10 @@ ClientZoneIpcType:
 - name: FallFromArena
   comment: Happens when you fall off the edge of an arena.
   opcode: 230
+  size: 24
+- name: DyeInformation
+  comment: Information about the dye about to be applied.
+  opcode: 380
   size: 24
 ServerLobbyIpcType:
 - name: NackReply

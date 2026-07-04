@@ -421,7 +421,6 @@ impl Zone {
         &self,
         instance_id: u32,
     ) -> Option<(&InstanceObject, &ExitRangeInstanceObject)> {
-        // TODO: also check position!
         for layer_group in &self.layer_groups {
             for layer in &layer_group.chunks[0].layers {
                 if !layer.header.has_layer_set(self.layer_set as u32) {
@@ -1361,7 +1360,7 @@ pub fn handle_zone_messages(
                 // Seen when attempting to enter underwater portals in Ruby Sea
                 if new_exit_box.territory_type == 0
                     && new_exit_box.zone_id == 0
-                    && new_exit_box.exit_type == physis::layer::ExitType::Unk
+                    && new_exit_box.exit_type == physis::layer::ExitType::Invisible
                 {
                     destination_zone_id = current_instance.zone.id;
                 }

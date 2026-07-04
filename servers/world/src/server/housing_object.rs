@@ -407,9 +407,10 @@ mod tests {
     use binrw::BinWrite;
     use glam::Vec3;
     use kawari::{
-        common::{CustomizeData, Position, STRIKING_DUMMY_NAME_ID},
+        common::{Position, STRIKING_DUMMY_NAME_ID},
         ipc::zone::{BattleNpcSubKind, CommonSpawn, ObjectKind},
     };
+    use physis::savedata::chardat::CustomizeData;
     use std::io::Cursor;
 
     fn furniture(slot: u16, indoors: bool, plot_index: u8) -> HousingFurnitureObject {
