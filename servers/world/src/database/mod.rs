@@ -25,14 +25,61 @@ pub use models::{
 mod schema;
 mod social;
 
-use diesel::{Connection, QueryDsl, RunQueryDsl, SqliteConnection, prelude::*};
+use diesel::{
+    Connection, QueryDsl, QueryableByName, RunQueryDsl, SqliteConnection,
+    connection::SimpleConnection, prelude::*, sql_query, sql_types::BigInt,
+};
 use diesel_migrations::{EmbeddedMigrations, MigrationHarness, embed_migrations};
-use kawari::common::ObjectId;
+use kawari::{
+    common::ObjectId,
+    constants::{
+        COMPLETED_LEGACY_QUEST_BITMASK_SIZE, COMPLETED_LEVEQUEST_BITMASK_SIZE,
+        UNLOCKED_MAP_MARKERS_BITMASK_SIZE,
+    },
+};
 
 pub const MIGRATIONS: EmbeddedMigrations = embed_migrations!("migrations");
 
 pub struct WorldDatabase {
     connection: SqliteConnection,
+}
+
+#[derive(QueryableByName)]
+struct SchemaColumnCount {
+    #[diesel(sql_type = BigInt)]
+    count: i64,
+}
+
+fn zero_bitmask_json(size: usize) -> String {
+    serde_json::to_string(&vec![0u8; size]).expect("zero bitmask should serialize")
+}
+
+fn quest_column_exists(connection: &mut SqliteConnection, column: &str) -> bool {
+    let query =
+        format!("SELECT COUNT(*) AS count FROM pragma_table_info('quest') WHERE name = '{column}'");
+    sql_query(query)
+        .get_result::<SchemaColumnCount>(connection)
+        .map(|result| result.count > 0)
+        .unwrap_or_default()
+}
+
+fn ensure_legacy_quest_completion_columns(connection: &mut SqliteConnection) {
+    for (column, size) in [
+        ("completed_legacy", COMPLETED_LEGACY_QUEST_BITMASK_SIZE),
+        ("unlocked_map_markers", UNLOCKED_MAP_MARKERS_BITMASK_SIZE),
+        ("completed_levequests", COMPLETED_LEVEQUEST_BITMASK_SIZE),
+    ] {
+        if quest_column_exists(connection, column) {
+            continue;
+        }
+
+        let default_value = zero_bitmask_json(size);
+        connection
+            .batch_execute(&format!(
+                "ALTER TABLE `quest` ADD COLUMN `{column}` TEXT NOT NULL DEFAULT '{default_value}'"
+            ))
+            .expect("failed to add legacy quest completion column");
+    }
 }
 
 impl Default for WorldDatabase {
@@ -51,6 +98,7 @@ impl WorldDatabase {
             SqliteConnection::establish(database_url).expect("Failed to open database!");
 
         connection.run_pending_migrations(MIGRATIONS).unwrap();
+        ensure_legacy_quest_completion_columns(&mut connection);
 
         Self { connection }
     }
@@ -117,4 +165,81 @@ extern "SQL" {
 #[declare_sql_function]
 extern "SQL" {
     fn unixepoch() -> diesel::sql_types::BigInt;
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{fs, path::PathBuf};
+
+    use diesel::{
+        QueryableByName, RunQueryDsl, connection::SimpleConnection, sql_query, sql_types::Text,
+    };
+
+    use super::WorldDatabase;
+
+    #[derive(QueryableByName)]
+    struct QuestCompletionColumns {
+        #[diesel(sql_type = Text)]
+        completed_legacy: String,
+        #[diesel(sql_type = Text)]
+        unlocked_map_markers: String,
+        #[diesel(sql_type = Text)]
+        completed_levequests: String,
+    }
+
+    fn temp_database_path(test_name: &str) -> PathBuf {
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "kawari-world-{test_name}-{}-{}.db",
+            std::process::id(),
+            fastrand::u64(..)
+        ));
+        path
+    }
+
+    #[test]
+    fn world_migrations_upgrade_legacy_quest_table_with_completion_fields() {
+        let database_path = temp_database_path("legacy-quest-completion-fields");
+        let database_url = database_path.to_string_lossy().into_owned();
+
+        {
+            let mut database = WorldDatabase::new_at(&database_url);
+            database
+                .connection
+                .batch_execute(
+                    r#"
+                    DROP TABLE `quest`;
+                    CREATE TABLE `quest`(
+                        `content_id` BIGINT NOT NULL PRIMARY KEY,
+                        `completed` TEXT NOT NULL,
+                        `active` TEXT NOT NULL
+                    );
+                    INSERT INTO `quest` (`content_id`, `completed`, `active`)
+                        VALUES (1, '[]', '[]');
+                    "#,
+                )
+                .expect("legacy test schema should be created");
+        }
+
+        let mut database = WorldDatabase::new_at(&database_url);
+        let columns = sql_query(
+            "SELECT completed_legacy, unlocked_map_markers, completed_levequests \
+             FROM quest WHERE content_id = 1",
+        )
+        .get_result::<QuestCompletionColumns>(&mut database.connection)
+        .expect("quest completion columns should exist after migration");
+
+        let completed_legacy: Vec<u8> =
+            serde_json::from_str(&columns.completed_legacy).expect("legacy mask should be JSON");
+        let unlocked_map_markers: Vec<u8> = serde_json::from_str(&columns.unlocked_map_markers)
+            .expect("map marker mask should be JSON");
+        let completed_levequests: Vec<u8> = serde_json::from_str(&columns.completed_levequests)
+            .expect("levequest mask should be JSON");
+
+        assert_eq!(completed_legacy, vec![0; 40]);
+        assert_eq!(unlocked_map_markers, vec![0; 64]);
+        assert_eq!(completed_levequests, vec![0; 226]);
+
+        fs::remove_file(database_path).ok();
+    }
 }
